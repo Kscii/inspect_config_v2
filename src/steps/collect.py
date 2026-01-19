@@ -12,11 +12,10 @@ from __future__ import annotations
 
 import csv
 import json
-import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 
 @dataclass
@@ -24,177 +23,25 @@ class CollectResult:
     model_to_values_csv: Dict[str, Path]
 
 
-def run_step(
-    repo_root: Path,
-    global_cfg: Dict[str, Any],
-    step_cfg: Dict[str, Any],
-    runtime: Dict[str, Any],
-) -> CollectResult:
-    logger = runtime.get("logger")
-    log_mode = runtime.get("log_mode", global_cfg.get("log_mode", "normal"))
-    obs_download_root: Path = runtime["obs_download_root"]
-    models: List[str] = runtime["models"]
-    model_to_selectors_txt: Dict[str, Path] = runtime["model_to_selectors_txt"]
-
-    csv_output_dir = repo_root / "csv_output"
-    csv_output_dir.mkdir(parents=True, exist_ok=True)
-
-    single_file_mode: bool = bool(step_cfg.get("single_file_mode", True))
-    json_suffix: str = str(step_cfg.get("json_suffix", ".json"))
-    csv_encoding: str = str(step_cfg.get("csv_encoding", "utf-8-sig"))
-    csv_write_header: bool = bool(step_cfg.get("csv_write_header", True))
-    filename_in_csv: str = str(step_cfg.get("filename_in_csv", "basename"))
-    strict_mode: bool = bool(step_cfg.get("strict_mode", False))
-
-    model_to_values: Dict[str, Path] = {}
-
-    for model in models:
-        model_root = obs_download_root / model
-        if not model_root.exists():
-            _log(logger, log_mode, f"[collect] model={model} 不存在目录：{model_root} -> 跳过")
-            continue
-
-        selectors_txt = model_to_selectors_txt.get(model)
-        if not selectors_txt or not selectors_txt.exists():
-            _log(logger, log_mode, f"[collect] model={model} 缺少 selectors.txt -> 跳过")
-            continue
-
-        selectors = [line.strip() for line in selectors_txt.read_text(encoding="utf-8").splitlines() if line.strip()]
-        if not selectors:
-            _log(logger, log_mode, f"[collect] model={model} selectors 为空 -> 跳过")
-            continue
-
-        json_files = [p for p in model_root.rglob(f"*{json_suffix}") if p.is_file()]
-        if not json_files:
-            _log(logger, log_mode, f"[collect] model={model} 未找到 json -> 跳过")
-            continue
-
-        out_dir = csv_output_dir / model
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        if single_file_mode:
-            out_csv = out_dir / f"{model}.csv"
-            _write_single_csv(
-                model_root=model_root,
-                json_files=json_files,
-                selectors=selectors,
-                out_csv=out_csv,
-                encoding=csv_encoding,
-                write_header=csv_write_header,
-                filename_mode=filename_in_csv,
-                strict_mode=strict_mode,
-                logger=logger,
-                log_mode=log_mode,
-            )
-
-            model_to_values[model] = out_csv
-        else:
-            # 多文件模式：每个 selector 一个 CSV（这里保留能力，但你当前主要用单文件模式）
-            # 为避免项目拆散，这里仍放在同一个 step 文件里
-            for sel in selectors:
-                out_csv = out_dir / _safe_selector_filename(sel)  # 每个 selector 一个文件
-                _write_multi_csv_for_selector(
-                    model_root=model_root,
-                    json_files=json_files,
-                    selector=sel,
-                    out_csv=out_csv,
-                    encoding=csv_encoding,
-                    write_header=csv_write_header,
-                    filename_mode=filename_in_csv,
-                    strict_mode=strict_mode,
-                    logger=logger,
-                    log_mode=log_mode,
-                )
-            model_to_values[model] = out_dir / f"{model}.csv"  # 语义上返回一个“主产物”，实际多文件在目录下
-
-        _log(logger, log_mode, f"[collect] model={model} 完成，json_files={len(json_files)}")
-
-    return CollectResult(model_to_values_csv=model_to_values)
-
-
 # ----------------------------
-# 写 CSV（单文件模式）
-# ----------------------------
-
-def _write_single_csv(
-    model_root: Path,
-    json_files: List[Path],
-    selectors: List[str],
-    out_csv: Path,
-    encoding: str,
-    write_header: bool,
-    filename_mode: str,
-    strict_mode: bool,
-    logger,
-    log_mode: str,
-) -> None:
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-
-    with out_csv.open("w", encoding=encoding, newline="") as f:
-        w = csv.writer(f)
-
-        if write_header:
-            w.writerow(["file"] + selectors)
-
-        for jf in sorted(json_files):
-            try:
-                data = json.loads(jf.read_text(encoding="utf-8-sig", errors="ignore"))
-                row = [_format_filename(jf, model_root, filename_mode)]
-                for sel in selectors:
-                    v = _eval_selector(data, sel)
-                    row.append(_to_cell(v))
-                w.writerow(row)
-            except Exception as e:
-                msg = f"[collect] 处理失败：{jf} err={e}"
-                if strict_mode:
-                    raise RuntimeError(msg)
-                _log(logger, log_mode, msg)
-
-
-# ----------------------------
-# 多文件模式（每 selector 一个 CSV）
-# ----------------------------
-
-def _write_multi_csv_for_selector(
-    model_root: Path,
-    json_files: List[Path],
-    selector: str,
-    out_csv: Path,
-    encoding: str,
-    write_header: bool,
-    filename_mode: str,
-    strict_mode: bool,
-    logger,
-    log_mode: str,
-) -> None:
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-    with out_csv.open("w", encoding=encoding, newline="") as f:
-        w = csv.writer(f)
-        if write_header:
-            w.writerow(["file", "value"])
-        for jf in sorted(json_files):
-            try:
-                data = json.loads(jf.read_text(encoding="utf-8-sig", errors="ignore"))
-                v = _eval_selector(data, selector)
-                w.writerow([_format_filename(jf, model_root, filename_mode), _to_cell(v)])
-            except Exception as e:
-                msg = f"[collect] 处理失败：{jf} selector={selector} err={e}"
-                if strict_mode:
-                    raise RuntimeError(msg)
-                _log(logger, log_mode, msg)
-
-
-# ----------------------------
-# selector 解析与执行（与 selectors step 输出格式配套）
+# selector 解析与执行（预编译）
 # ----------------------------
 
 # 形如：.<k> 或 .[<k>=<v>]
 _SEG_KEY = re.compile(r"\.<([^<>]+)>")
 _SEG_FILTER = re.compile(r"\.\[<([^<>]+)>=<([^<>]+)>\]")
 
-def _eval_selector(data: Any, selector: str) -> Any:
+
+# 为了更快：将 selector 编译成操作序列（避免每次 eval 都 regex/scan selector 字符串）
+# op 形式：
+#   ("K", key)          -> dict key
+#   ("F", k, v)         -> list[dict] filter first dict where str(dict[k]) == v
+CompiledOp = Union[Tuple[str, str], Tuple[str, str, str]]  # ("K", key) or ("F", k, v)
+
+
+def _compile_selector(selector: str) -> List[CompiledOp]:
     """
-    执行 selector：
+    与原 _eval_selector 支持的语法一致：
     - .<key>：dict key
     - .[<k>=<v>]：list[dict] 过滤：选择第一个满足 dict[k]==v 的元素
     """
@@ -202,49 +49,70 @@ def _eval_selector(data: Any, selector: str) -> Any:
     if not s.startswith("."):
         raise ValueError(f"selector must start with '.', got: {selector}")
 
+    # 允许根是 "."（原行为：返回 data）
+    if s == ".":
+        return []
+
+    ops: List[CompiledOp] = []
     i = 0
-    cur = data
-    while i < len(s):
+    L = len(s)
+
+    # 仍然用同样的 regex 规则，只是把匹配从“每次取值”挪到“启动时编译一次”
+    while i < L:
         if s.startswith(".[", i):
             m = _SEG_FILTER.match(s, i)
             if not m:
                 raise ValueError(f"bad filter seg at {i}: {selector}")
-            k = m.group(1)
-            v = m.group(2)
-            cur = _apply_filter(cur, k, v)
+            ops.append(("F", m.group(1), m.group(2)))
             i = m.end()
         elif s.startswith(".<", i):
             m = _SEG_KEY.match(s, i)
             if not m:
                 raise ValueError(f"bad key seg at {i}: {selector}")
-            key = m.group(1)
-            cur = _apply_key(cur, key)
+            ops.append(("K", m.group(1)))
             i = m.end()
         else:
-            # 允许出现空字符串前缀（例如 selector 根是 "."）
-            if i == 0 and s == ".":
-                return cur
-            # 不认识的片段
             raise ValueError(f"unknown selector syntax at {i}: {selector}")
+
+    return ops
+
+
+def _eval_compiled(data: Any, ops: List[CompiledOp]) -> Any:
+    """
+    执行已编译 ops（语义与原 _eval_selector 一致）
+    """
+    cur = data
+
+    # 用局部变量绑定，减少属性查找开销
+    for op in ops:
+        t = op[0]
+        if t == "K":
+            # ("K", key)
+            key = op[1]  # type: ignore[index]
+            if isinstance(cur, dict):
+                cur = cur.get(key)
+            else:
+                return None
+        else:
+            # ("F", k, v)
+            k = op[1]  # type: ignore[index]
+            v = op[2]  # type: ignore[index]
+            if isinstance(cur, list):
+                hit = None
+                for it in cur:
+                    if isinstance(it, dict) and str(it.get(k)) == v:
+                        hit = it
+                        break
+                cur = hit
+            else:
+                return None
 
     return cur
 
 
-def _apply_key(cur: Any, key: str) -> Any:
-    if isinstance(cur, dict):
-        return cur.get(key)
-    return None
-
-
-def _apply_filter(cur: Any, k: str, v: str) -> Any:
-    if isinstance(cur, list):
-        for it in cur:
-            if isinstance(it, dict) and str(it.get(k)) == v:
-                return it
-        return None
-    # 如果不是 list，直接 None
-    return None
-
+# ----------------------------
+# I/O 与格式化
+# ----------------------------
 
 def _to_cell(v: Any) -> str:
     """
@@ -287,3 +155,250 @@ def _log(logger, log_mode: str, msg: str) -> None:
         print(msg)
         return
     logger.info(msg)
+
+
+def _load_json_text_compat(path: Path) -> Any:
+    """
+    保持与原行为一致：
+    - read_text(encoding="utf-8-sig", errors="ignore")
+    - json.loads(...)
+    """
+    txt = path.read_text(encoding="utf-8-sig", errors="ignore")
+    return json.loads(txt)
+
+
+# ----------------------------
+# step 入口
+# ----------------------------
+
+def run_step(
+    repo_root: Path,
+    global_cfg: Dict[str, Any],
+    step_cfg: Dict[str, Any],
+    runtime: Dict[str, Any],
+) -> CollectResult:
+    logger = runtime.get("logger")
+    log_mode = runtime.get("log_mode", global_cfg.get("log_mode", "normal"))
+    obs_download_root: Path = runtime["obs_download_root"]
+    models: List[str] = runtime["models"]
+    model_to_selectors_txt: Dict[str, Path] = runtime["model_to_selectors_txt"]
+
+    csv_output_dir = repo_root / "csv_output"
+    csv_output_dir.mkdir(parents=True, exist_ok=True)
+
+    single_file_mode: bool = bool(step_cfg.get("single_file_mode", True))
+    json_suffix: str = str(step_cfg.get("json_suffix", ".json"))
+    csv_encoding: str = str(step_cfg.get("csv_encoding", "utf-8-sig"))
+    csv_write_header: bool = bool(step_cfg.get("csv_write_header", True))
+    filename_in_csv: str = str(step_cfg.get("filename_in_csv", "basename"))
+    strict_mode: bool = bool(step_cfg.get("strict_mode", False))
+
+    # 性能优化：批量 writerows（默认 1024 行一批，不改变输出内容）
+    # （新增可选配置，不影响原逻辑；不配时采用默认）
+    batch_rows: int = int(step_cfg.get("batch_rows", 1024))
+    if batch_rows <= 0:
+        batch_rows = 1
+
+    model_to_values: Dict[str, Path] = {}
+
+    # 局部绑定加速
+    _exists = Path.exists
+    _read_text = Path.read_text
+    _splitlines = str.splitlines
+
+    for model in models:
+        model_root = obs_download_root / model
+        if not _exists(model_root):
+            _log(logger, log_mode, f"[collect] model={model} 不存在目录：{model_root} -> 跳过")
+            continue
+
+        selectors_txt = model_to_selectors_txt.get(model)
+        if not selectors_txt or not _exists(selectors_txt):
+            _log(logger, log_mode, f"[collect] model={model} 缺少 selectors.txt -> 跳过")
+            continue
+
+        # 读 selectors（与原一致：strip+非空）
+        selectors = [
+            line.strip()
+            for line in _splitlines(_read_text(selectors_txt, encoding="utf-8"))
+            if line.strip()
+        ]
+        if not selectors:
+            _log(logger, log_mode, f"[collect] model={model} selectors 为空 -> 跳过")
+            continue
+
+        # 保持原行为：收集所有 json 文件并排序
+        # 性能点：
+        # - rglob 本身是生成器，但为了排序必须落到 list（保持行为）
+        # - 仍然尽量减少多余属性查找/调用
+        json_files = [p for p in model_root.rglob(f"*{json_suffix}") if p.is_file()]
+        if not json_files:
+            _log(logger, log_mode, f"[collect] model={model} 未找到 json -> 跳过")
+            continue
+
+        out_dir = csv_output_dir / model
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # 预编译 selectors（核心性能提升点）
+        try:
+            compiled_selectors: List[Tuple[str, List[CompiledOp]]] = [
+                (sel, _compile_selector(sel)) for sel in selectors
+            ]
+        except Exception as e:
+            msg = f"[collect] model={model} 编译 selectors 失败 err={e}"
+            if strict_mode:
+                raise RuntimeError(msg)
+            _log(logger, log_mode, msg)
+            continue
+
+        if single_file_mode:
+            out_csv = out_dir / f"{model}.csv"
+            _write_single_csv(
+                model_root=model_root,
+                json_files=json_files,
+                compiled_selectors=compiled_selectors,
+                out_csv=out_csv,
+                encoding=csv_encoding,
+                write_header=csv_write_header,
+                filename_mode=filename_in_csv,
+                strict_mode=strict_mode,
+                logger=logger,
+                log_mode=log_mode,
+                batch_rows=batch_rows,
+            )
+            model_to_values[model] = out_csv
+        else:
+            # 多文件模式：每个 selector 一个 CSV（行为保持不变）
+            for sel, ops in compiled_selectors:
+                out_csv = out_dir / _safe_selector_filename(sel)
+                _write_multi_csv_for_selector(
+                    model_root=model_root,
+                    json_files=json_files,
+                    selector=sel,
+                    compiled_ops=ops,
+                    out_csv=out_csv,
+                    encoding=csv_encoding,
+                    write_header=csv_write_header,
+                    filename_mode=filename_in_csv,
+                    strict_mode=strict_mode,
+                    logger=logger,
+                    log_mode=log_mode,
+                    batch_rows=batch_rows,
+                )
+            model_to_values[model] = out_dir / f"{model}.csv"
+
+        _log(logger, log_mode, f"[collect] model={model} 完成，json_files={len(json_files)}")
+
+    return CollectResult(model_to_values_csv=model_to_values)
+
+
+# ----------------------------
+# 写 CSV（单文件模式）
+# ----------------------------
+
+def _write_single_csv(
+    model_root: Path,
+    json_files: List[Path],
+    compiled_selectors: List[Tuple[str, List[CompiledOp]]],
+    out_csv: Path,
+    encoding: str,
+    write_header: bool,
+    filename_mode: str,
+    strict_mode: bool,
+    logger,
+    log_mode: str,
+    batch_rows: int,
+) -> None:
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    # 局部绑定加速
+    _sorted = sorted
+    _format = _format_filename
+    _to = _to_cell
+    _load = _load_json_text_compat
+    _eval = _eval_compiled
+    _logf = _log
+
+    selectors_only = [sel for (sel, _) in compiled_selectors]
+
+    with out_csv.open("w", encoding=encoding, newline="") as f:
+        w = csv.writer(f)
+
+        if write_header:
+            w.writerow(["file"] + selectors_only)
+
+        buf: List[List[str]] = []
+        # 保持原行为：sorted(json_files)
+        for jf in _sorted(json_files):
+            try:
+                data = _load(jf)
+                row = [_format(jf, model_root, filename_mode)]
+                # 关键路径：用 compiled ops eval（避免每个 selector 反复解析字符串）
+                for _, ops in compiled_selectors:
+                    v = _eval(data, ops)
+                    row.append(_to(v))
+                buf.append(row)
+
+                if len(buf) >= batch_rows:
+                    w.writerows(buf)
+                    buf.clear()
+            except Exception as e:
+                msg = f"[collect] 处理失败：{jf} err={e}"
+                if strict_mode:
+                    raise RuntimeError(msg)
+                _logf(logger, log_mode, msg)
+
+        if buf:
+            w.writerows(buf)
+
+
+# ----------------------------
+# 多文件模式（每 selector 一个 CSV）
+# ----------------------------
+
+def _write_multi_csv_for_selector(
+    model_root: Path,
+    json_files: List[Path],
+    selector: str,
+    compiled_ops: List[CompiledOp],
+    out_csv: Path,
+    encoding: str,
+    write_header: bool,
+    filename_mode: str,
+    strict_mode: bool,
+    logger,
+    log_mode: str,
+    batch_rows: int,
+) -> None:
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    _sorted = sorted
+    _format = _format_filename
+    _to = _to_cell
+    _load = _load_json_text_compat
+    _eval = _eval_compiled
+    _logf = _log
+
+    with out_csv.open("w", encoding=encoding, newline="") as f:
+        w = csv.writer(f)
+        if write_header:
+            w.writerow(["file", "value"])
+
+        buf: List[List[str]] = []
+        for jf in _sorted(json_files):
+            try:
+                data = _load(jf)
+                v = _eval(data, compiled_ops)
+                buf.append([_format(jf, model_root, filename_mode), _to(v)])
+
+                if len(buf) >= batch_rows:
+                    w.writerows(buf)
+                    buf.clear()
+            except Exception as e:
+                msg = f"[collect] 处理失败：{jf} selector={selector} err={e}"
+                if strict_mode:
+                    raise RuntimeError(msg)
+                _logf(logger, log_mode, msg)
+
+        if buf:
+            w.writerows(buf)
