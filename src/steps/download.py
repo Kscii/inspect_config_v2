@@ -12,6 +12,7 @@ download step
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -27,6 +28,11 @@ class DownloadResult:
     models: List[str]
     collect_root: Path
     obs_download_root: Path
+
+
+# 先正则快速找 model，命中就不必 json.loads（对大 json 很省）
+_MODEL_RE = re.compile(r'"model"\s*:\s*"([^"]+)"', re.IGNORECASE)
+_ROBOT_MODEL_RE = re.compile(r'"robotModel"\s*:\s*"([^"]+)"', re.IGNORECASE)
 
 
 def run_step(
@@ -60,12 +66,11 @@ def run_step(
     # -------------------------
     # 本地目录命名（按配置）
     # -------------------------
-    # 你要求：下载到 repo_root，然后把 collect 改名为 obs_download
-    download_dirname = str(step_cfg.get("download_dirname"))           # 通常是 collect
+    download_dirname = str(step_cfg.get("download_dirname"))  # 通常是 collect
     obs_download_rootname = str(step_cfg.get("obs_download_rootname"))
 
-    collect_root = repo_root / download_dirname             # 下载后应出现的目录（例如 repo_root/collect）
-    obs_download_root = repo_root / obs_download_rootname   # 最终目录（例如 repo_root/obs_download）
+    collect_root = repo_root / download_dirname
+    obs_download_root = repo_root / obs_download_rootname
 
     # -------------------------
     # 下载/搬运相关配置
@@ -117,8 +122,6 @@ def run_step(
 
     # -------------------------
     # 2) 将下载出来的 “collect” 改名为 “obs_download”
-    #    兼容：有些环境可能不会直接落出 repo_root/collect，
-    #         这里做一个尽量稳的定位逻辑。
     # -------------------------
     downloaded_root = _find_downloaded_collect_root(
         repo_root=repo_root,
@@ -134,65 +137,61 @@ def run_step(
         )
 
     if downloaded_root.resolve() != collect_root.resolve():
-        # 如果实际下载目录不是 collect_root，但你仍希望最终叫 obs_download，
-        # 这里先把“实际下载目录”搬到 collect_root，再统一改名。
         _log(logger, log_mode, f"[download] 下载产物目录与期望不一致：actual={downloaded_root} expect={collect_root} -> 先统一到 expect")
         if not dry_run:
             if collect_root.exists():
                 shutil.rmtree(collect_root, ignore_errors=True)
             shutil.move(str(downloaded_root), str(collect_root))
 
-    # 现在保证 collect_root 存在
     if not collect_root.exists():
         raise FileNotFoundError(f"collect_root not found after download/normalize: {collect_root}")
 
     _log(logger, log_mode, f"[download] 改名：{collect_root.name} -> {obs_download_root.name}")
     if not dry_run:
         if obs_download_root.exists():
-            # full_refresh=False 时这里可能存在旧内容（谨慎起见先删掉，避免混入脏数据）
             shutil.rmtree(obs_download_root, ignore_errors=True)
         shutil.move(str(collect_root), str(obs_download_root))
 
-    # DRY_RUN 时也让后续逻辑能跑下去（只是不做实际移动）
     working_root = obs_download_root if not dry_run else collect_root
 
     # -------------------------
     # 3) 自动发现 taskid 目录，并按 model 分组到 obs_download/<model>/<taskid>/...
-    #    当前 working_root 下目录形态通常是：
-    #      working_root/<taskid>/<episodeId>/.../*.json
     # -------------------------
     if not working_root.exists():
         raise FileNotFoundError(f"working_root not found: {working_root}")
 
-    # 只取 working_root 直接子目录（避免把后续创建的 model 目录也扫进来）
-    task_dirs = [p for p in working_root.iterdir() if p.is_dir()]
+    # 更快的扫描：os.scandir（避免 Path.iterdir 产生大量对象开销）
+    task_dirs: List[Path] = []
+    with os.scandir(working_root) as it:
+        for e in it:
+            if e.is_dir():
+                task_dirs.append(Path(e.path))
 
-    # 如果已经存在 model 目录（例如你重复运行且 full_refresh=False），这里要尽量只选“像 taskid 的目录”
     if filter_taskid_dirs:
         task_dirs = [p for p in task_dirs if taskid_re.match(p.name or "")]
     else:
-        # 不强制时也做一个“软过滤”：优先把明显不是 taskid 的排除掉（避免把 model 目录当 task）
-        task_dirs = [p for p in task_dirs if taskid_re.match(p.name or "")] or task_dirs
+        # 软过滤：优先只取像 taskid 的目录；如果一个都匹配不到则全放行
+        filtered = [p for p in task_dirs if taskid_re.match(p.name or "")]
+        task_dirs = filtered or task_dirs
 
     _log(logger, log_mode, f"[download] 扫描 task 目录数：{len(task_dirs)} (filter_taskid_dirs={filter_taskid_dirs})")
 
     model_set: set[str] = set()
 
-    # 为了避免“边遍历边移动”导致迭代器异常，这里先固化列表
-    task_dirs_sorted = sorted(task_dirs, key=lambda x: x.name)
+    # 不强依赖顺序时不要 sorted（避免额外 O(n log n) + 字符串比较）
+    # 如果你确实需要稳定顺序，可以把下面这一行取消注释：
+    # task_dirs = sorted(task_dirs, key=lambda x: x.name)
 
-    for task_dir in task_dirs_sorted:
+    for task_dir in task_dirs:
         if not task_dir.is_dir():
             continue
 
-        # task_dir 下通常是 episode 目录
-        episode_dirs = [p for p in task_dir.iterdir() if p.is_dir()]
-        if not episode_dirs:
+        # 只需要判断“有没有 episode 子目录”，不做全量 list/sorted
+        if not _has_any_subdir(task_dir):
             continue
 
-        # 从 task 下挑一个 json 作为识别样本（优先 *_collect.json）
-        sample_json = _pick_sample_json(task_dir)
-        model = _detect_model_from_collect_json(
+        sample_json = _pick_sample_json_fast(task_dir)
+        model = _detect_model_from_collect_json_fast(
             sample_json,
             default_model=default_model,
             logger=logger,
@@ -207,22 +206,18 @@ def run_step(
         if dry_run:
             continue
 
-        # 这里采用 “copytree 合并 + 删除源目录” 的方式来实现“可合并的 move”
-        _copytree_with_retries(
+        # 关键优化：优先 O(1) rename/move；仅当 dst 已存在才 fallback 合并 copytree
+        _move_task_dir_fast(
             src=task_dir,
             dst=dst_task_dir,
             retries=move_retries,
             logger=logger,
             log_mode=log_mode,
         )
-        # copy 成功后删源，避免根目录残留 taskid
-        shutil.rmtree(task_dir, ignore_errors=True)
 
     models = sorted(model_set)
     _log(logger, log_mode, f"[download] 自动发现构型：{models}")
 
-    # 由于你新要求“collect 改名为 obs_download”，现在 collect_root 已不存在（非 dry_run）
-    # 这里保持字段不变，但把 collect_root 语义设置为 working_root（更符合后续排查）
     return DownloadResult(models=models, collect_root=working_root, obs_download_root=working_root)
 
 
@@ -248,9 +243,7 @@ def _obsutil_cp_prefix_to_repo_root(
     dry_run: bool,
     logger,
 ) -> None:
-    """
-    使用 obsutil 将 obs://bucket/obs_prefix 整体拉到 repo_root（当前路径）
-    """
+    """使用 obsutil 将 obs://bucket/obs_prefix 整体拉到 repo_root（当前路径）"""
     exe = obsutil_exe or "obsutil"
     src = f"obs://{bucket}/{obs_prefix.lstrip('/')}"
     dst = str(repo_root)
@@ -288,56 +281,88 @@ def _find_downloaded_collect_root(
     logger,
     log_mode: str,
 ) -> Optional[Path]:
-    # repo_root/collect
+    # 目前仍保持你原来的最严格行为：只认 repo_root/collect
     if expect_collect_root.exists() and expect_collect_root.is_dir():
         return expect_collect_root
     return None
 
 
-def _pick_sample_json(task_dir: Path) -> Optional[Path]:
+def _has_any_subdir(d: Path) -> bool:
+    """比 list(itertools) 更省：只要找到一个子目录就返回 True"""
+    try:
+        with os.scandir(d) as it:
+            for e in it:
+                if e.is_dir():
+                    return True
+    except FileNotFoundError:
+        return False
+    return False
+
+
+def _pick_sample_json_fast(task_dir: Path) -> Optional[Path]:
     """
-    - 只看第一个 episode 目录
-    - 优先 *_collect.json
-    - 再退化到 episode 下任意 .json
+    更快版本：
+    - 找到任意一个 episode 子目录就用（不排序）
+    - 优先返回第一个 *_collect.json（不排序）
+    - 否则返回第一个 *.json（不排序）
     """
-    # 找第一个 episode 目录
-    episode_dirs = sorted([p for p in task_dir.iterdir() if p.is_dir()], key=lambda x: x.name)
-    if not episode_dirs:
+    first_ep: Optional[Path] = None
+    try:
+        with os.scandir(task_dir) as it:
+            for e in it:
+                if e.is_dir():
+                    first_ep = Path(e.path)
+                    break
+    except FileNotFoundError:
         return None
-    first_ep = episode_dirs[0]
 
-    cands = sorted(first_ep.glob("*_collect.json"), key=lambda x: x.name)
-    if cands:
-        return cands[0]
+    if first_ep is None:
+        return None
 
-    # 兜底：随便拿一个 json（仍然只在 first_ep 下找）
-    any_json = sorted(first_ep.glob("*.json"), key=lambda x: x.name)
-    return any_json[0] if any_json else None
+    # 优先 *_collect.json
+    try:
+        for p in first_ep.glob("*_collect.json"):
+            return p
+        for p in first_ep.glob("*.json"):
+            return p
+    except FileNotFoundError:
+        return None
+    return None
 
 
-def _detect_model_from_collect_json(sample_json: Optional[Path], default_model: str, logger, log_mode: str) -> str:
+def _detect_model_from_collect_json_fast(sample_json: Optional[Path], default_model: str, logger, log_mode: str) -> str:
     """
-    识别构型（model）的启发式逻辑：
-    1) 读取 json
-    2) 尝试找model字段
-    3) 若找不到 -> default_model
+    识别构型（model）的启发式逻辑（性能优化版）：
+    1) 先 regex 从文本里抓 "model":"xxx" / "robotModel":"xxx"
+    2) 再 json.loads + 轻量 key 查找
+    3) 兜底 default_model
     """
     if sample_json is None or not sample_json.exists():
         return default_model
+
     try:
         text = sample_json.read_text(encoding="utf-8-sig", errors="ignore")
+    except Exception as e:
+        _log(logger, log_mode, f"[download] 读取样本 json 失败：{sample_json} err={e}")
+        return default_model
+
+    m = _MODEL_RE.search(text)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+
+    m2 = _ROBOT_MODEL_RE.search(text)
+    if m2 and m2.group(1).strip():
+        return m2.group(1).strip()
+
+    try:
         data = json.loads(text)
     except Exception as e:
         _log(logger, log_mode, f"[download] 解析样本 json 失败：{sample_json} err={e}")
         return default_model
 
-    candidates = [
-        ("model",)
-    ]
-    for path in candidates:
-        v = _get_by_path(data, path)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
+    v = _get_by_path(data, ("model",))
+    if isinstance(v, str) and v.strip():
+        return v.strip()
 
     v2 = _deep_find_first_key(data, keys={"model", "robotModel"})
     if isinstance(v2, str) and v2.strip():
@@ -372,11 +397,7 @@ def _deep_find_first_key(obj: Any, keys: set[str]) -> Any:
 
 
 def _sanitize_name(name: str, illegal_win_re: re.Pattern, fallback: str) -> str:
-    """
-    清洗文件夹名，保证 Windows/跨平台兼容。
-    - 替换非法字符为下划线
-    - 去掉前后空白
-    """
+    """清洗文件夹名，保证 Windows/跨平台兼容。"""
     s = (name or "").strip()
     if not s:
         return fallback
@@ -385,10 +406,45 @@ def _sanitize_name(name: str, illegal_win_re: re.Pattern, fallback: str) -> str:
     return s or fallback
 
 
+def _move_task_dir_fast(src: Path, dst: Path, retries: int, logger, log_mode: str) -> None:
+    """
+    性能关键：
+    - dst 不存在：用 os.replace 直接 rename（同盘 O(1)）
+    - dst 已存在：才 fallback 到 copytree 合并（慢，但极少触发）
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    # 常见路径：目标不存在 -> O(1) rename
+    if not dst.exists():
+        last_err: Optional[Exception] = None
+        for i in range(max(1, retries)):
+            try:
+                os.replace(str(src), str(dst))
+                return
+            except PermissionError as e:
+                last_err = e
+                _log(logger, log_mode, f"[download] move PermissionError 重试 {i+1}/{retries} src={src} dst={dst}")
+                time.sleep(0.5 * (i + 1))
+            except OSError as e:
+                # 例如跨盘、文件系统不支持 rename 等
+                last_err = e
+                break
+
+        _log(logger, log_mode, f"[download] move rename 失败，fallback copytree: src={src} dst={dst} last_err={last_err}")
+
+    # 兜底：合并 copy（慢）
+    _copytree_with_retries(
+        src=src,
+        dst=dst,
+        retries=retries,
+        logger=logger,
+        log_mode=log_mode,
+    )
+    shutil.rmtree(src, ignore_errors=True)
+
+
 def _copytree_with_retries(src: Path, dst: Path, retries: int, logger, log_mode: str) -> None:
-    """
-    复制目录（支持 dirs_exist_ok=True 合并），对 Windows PermissionError 做重试。
-    """
+    """复制目录（支持 dirs_exist_ok=True 合并），对 Windows PermissionError 做重试。"""
     dst.parent.mkdir(parents=True, exist_ok=True)
     last_err: Optional[Exception] = None
     for i in range(max(1, retries)):
