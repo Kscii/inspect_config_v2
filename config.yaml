@@ -350,6 +350,13 @@ find_range:
       min_hi: 35
       max_hi: 35
 
+    - models: ["KUAVO_4PRO_GRIPPER"]
+      contains: [".<loss_pp>"]
+      min_lo: 0
+      max_lo: 0
+      min_hi: 5
+      max_hi: 5
+
   field_rule_case_insensitive: true
   field_rule_model_case_insensitive: true
   apply_all_matching_rules: true
