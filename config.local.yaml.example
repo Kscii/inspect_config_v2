@@ -1,0 +1,145 @@
+# ==============================================================================
+# 全局配置（所有 step 可共享）
+# ==============================================================================
+global:
+  # 要执行的步骤
+  steps_to_run:
+    - download
+    - selectors
+    - collect
+    - find_range
+    - test_range
+    - pack_csv
+    - build_sql
+    # - update_rule_api
+
+  # 日志模式：
+  # - normal：尽量保持你原来“console log/打印”的格式与信息量（默认）
+  # - debug ：输出更详细信息（包含更多上下文、更多步骤细节、更完整异常栈等）
+  log_mode: "debug"   # "normal" | "debug"
+
+  # 全局 dry-run（演练模式）
+  # 说明：若为 true，runner 会尽量要求各 step 不产生破坏性动作；
+  #       同时各 step 仍保留自己的 DRY_RUN 配置（后续代码会做 OR 合并）
+  dry_run: false
+
+  # 是否允许继续执行后续 step（全局容错）
+  # - false：任一步失败立即中断（推荐，符合你“及时上报和中断流程”）
+  # - true ：记录错误并继续（仅调试时可能用）
+  continue_on_error: false
+
+# ==============================================================================
+# Step: download（负责：下载/搬运/合并/分组；并自动发现构型）
+# ==============================================================================
+download:
+  # 当前使用哪个预设（dev/prod）
+  # 说明：
+  # - bucket 从 global.presets.<preset>.obs_bucket 读取
+  # - 你也可以把 current_preset 固定为 prod，并且只改 global.presets 中的 bucket/url
+  current_preset: "dev"
+
+  # obsutil 并行参数：用于提升下载速度
+  parallel: 16
+  jobs: 16
+
+  # obsutil 可执行文件：留空表示用 PATH 里的 obsutil
+  # e.g. "C:\\path\\to\\obsutil.exe"
+  obsutil_exe: null
+
+  # 开启后：不重新下载，只做“搬运/合并 + 分组 + 写 log”
+  # 说明：适合你已经有 collect 落盘，想重新分组/刷新 obs_download 的场景
+  skip_download: false
+
+  # True：完全覆盖过去的 obs_download（不考虑已存在内容，保证全量更新）
+  # 说明：你之前提到的“完全覆盖 collect 和 obs_download”的核心开关之一
+  full_refresh: true
+
+  # 是否只演练（不实际移动/不实际下载）
+  # 说明：用于安全验证逻辑；如果 global.dry_run=true，这里也会被视为 true（后续代码实现）
+  dry_run: false
+
+# ==============================================================================
+# Step: selectors（负责：生成 selector 列表 + 过滤规则）
+# ==============================================================================
+selectors:
+  # 随机一致性检查（只在 generate_selectors_txt 时触发）
+  enable_random_consistency_check: false
+
+  # 随机抽样“不同 taskid 目录”的数量（每个 task 取 1 个 json）
+  consistency_sample_tasks: 100
+
+  # 随机种子：保证可复现（不想固定就设为 null）
+  consistency_random_seed: 0
+
+  # mismatch 时最多展示多少条差异 selector（避免刷屏）
+  consistency_diff_preview: 5
+
+# ==============================================================================
+# Step: collect（负责：从 json 中按 selector 收集值，输出 values.csv）
+# ==============================================================================
+collect:
+  # 是否剔除“所有文件对应的该字段都是空”的字段
+  # - true ：全空字段不输出（单文件模式会删列；多文件模式会跳过生成该字段 CSV）
+  # - false：照常输出
+  remove_all_empty_fields: false
+
+  # 是否写 CSV 表头
+  csv_write_header: true
+
+  # 严格模式
+  # - true ：遇到错误直接抛异常（runner 捕获后中断）
+  # - false：失败返回 None 或跳过（按你原逻辑）
+  strict_mode: false
+
+# ==============================================================================
+# Step: find_range（负责：根据 values.csv 估计区间，输出 ranges.csv）
+# ==============================================================================
+find_range:
+  method: "cover"          # "iqr" / "mad" / "cover"
+  iqr_k: 1.5
+  mad_z: 3.0
+  cover_pct: 0.95
+
+# ==============================================================================
+# Step: test_range（负责：区间命中检测，写回 ranges.csv 并输出统计）
+# ==============================================================================
+test_range:
+  treat_nan_as_fail: true
+  fields_mode: "range_only"
+
+  missing_value_col_is_fail: true
+  missing_range_is_fail: false
+
+  show_top_fields: true
+  top_n_fields: 5
+
+  show_fail_details: true
+  max_fail_details: 1
+
+# ==============================================================================
+# Step: pack_csv（负责：把 ranges.csv 转成 ranges.txt）
+# ==============================================================================
+
+# ==============================================================================
+# Step: build_sql（负责：把 ranges.txt 生成 update_rule_config.sql）
+# ==============================================================================
+build_sql:
+  sql_dirname: "sql_output"
+  sql_filename: "update_rule_config.sql"
+  csv_output_dirname: "csv_output"
+  fail_if_missing: true
+
+# ==============================================================================
+# Step: update_rule_api（负责：调用接口更新规则）
+# ==============================================================================
+update_rule_api:
+  # 当前使用哪个预设（dev 或 prod）
+  current_preset: "dev"
+
+  # header 名：按你接口要求是 accesstoken
+  access_token: "PASTE_YOUR_ACCESS_TOKEN_HERE"
+
+  dry_run: false
+  verify_tls: true
+  timeout_sec: 30
+
