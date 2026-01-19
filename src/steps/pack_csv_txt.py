@@ -49,7 +49,8 @@ def run_step(
 
         out_dir = repo_root / "csv_output" / model
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_txt = (out_dir / f"{model}_ranges").with_suffix(output_suffix)
+        suffix = output_suffix if output_suffix.startswith(".") else ("." + output_suffix)
+        out_txt = out_dir / f"{model}_ranges{suffix}"
 
         _write_text_no_newline_translation(out_txt, literal, encoding="utf-8")
 
