@@ -11,12 +11,12 @@ global:
     - test_range
     - pack_csv
     - build_sql
-    # - update_rule_api
+    - update_rule_api
 
   # 日志模式：
   # - normal：尽量保持你原来“console log/打印”的格式与信息量（默认）
   # - debug ：输出更详细信息（包含更多上下文、更多步骤细节、更完整异常栈等）
-  log_mode: "debug"   # "normal" | "debug"
+  log_mode: "normal"   # "normal" | "debug"
 
   # 全局 dry-run（演练模式）
   # 说明：若为 true，runner 会尽量要求各 step 不产生破坏性动作；
@@ -28,6 +28,30 @@ global:
   # - true ：记录错误并继续（仅调试时可能用）
   continue_on_error: false
 
+  # 是否启用 CSV 读取模式
+  # - false: 使用 obs_prefix 单一路径下载（原模式）
+  # - true : 读取 CSV，多路径下载（taskid list 模式）
+  csv_mode: false
+
+  # CSV 文件路径（相对 repo_root 或绝对路径都可）
+  csv_path: "task_id.csv"
+
+  # CSV 中 taskid 所在列名（支持带表头的 CSV）
+  # 如果你的 CSV 没有表头，可以设为 null，并使用 csv_col_index
+  csv_col_name: "task_id"
+
+  # CSV 列索引（0-based），仅当 csv_col_name 为 null 时生效
+  csv_col_index: 0
+
+  # 是否跳过首行（仅当你没有表头但第一行是说明时用）
+  csv_skip_header: false
+
+  # 拼接方式：obs_prefix(作为 base) + taskid + "/"
+  # true: 每行视作 taskid，拼成 data-collector-svc/collect/<taskid>/
+  # false: 每行视作完整 prefix（更通用，但你现在主要用 true）
+  csv_rows_are_taskid: true
+
+
 # ==============================================================================
 # Step: download（负责：下载/搬运/合并/分组；并自动发现构型）
 # ==============================================================================
@@ -37,6 +61,9 @@ download:
   # - bucket 从 global.presets.<preset>.obs_bucket 读取
   # - 你也可以把 current_preset 固定为 prod，并且只改 global.presets 中的 bucket/url
   current_preset: "dev"
+
+  # OBS 前缀（末尾带 / 不带都行）
+  obs_prefix: "data-collector-svc/collect/"
 
   # obsutil 并行参数：用于提升下载速度
   parallel: 16
@@ -78,11 +105,6 @@ selectors:
 # Step: collect（负责：从 json 中按 selector 收集值，输出 values.csv）
 # ==============================================================================
 collect:
-  # 是否剔除“所有文件对应的该字段都是空”的字段
-  # - true ：全空字段不输出（单文件模式会删列；多文件模式会跳过生成该字段 CSV）
-  # - false：照常输出
-  remove_all_empty_fields: false
-
   # 是否写 CSV 表头
   csv_write_header: true
 
@@ -137,7 +159,7 @@ update_rule_api:
   current_preset: "dev"
 
   # header 名：按你接口要求是 accesstoken
-  access_token: "PASTE_YOUR_ACCESS_TOKEN_HERE"
+  access_token: "eyJhbGciOiJSUzI1NiIsImtpZCI6ImRhdGEtY29sbGVjdG9yLWNlcnRzIiwidHlwIjoiSldUIn0.eyJvd25lciI6ImRhdGEtY29sbGVjdG9yIiwibmFtZSI6ImZhbmd4dWVqaWFuIiwiY3JlYXRlZFRpbWUiOiIyMDI1LTEyLTMwVDA5OjE2OjQ2KzA4OjAwIiwidXBkYXRlZFRpbWUiOiIyMDI2LTAxLTE1VDE4OjMyOjI2KzA4OjAwIiwiZGVsZXRlZFRpbWUiOiIiLCJpZCI6ImQzNzkwNWIzLWExYzEtNDdlNS05NTZjLWUzZjFkZjI0MDAwNCIsInR5cGUiOiJub3JtYWwtdXNlciIsInBhc3N3b3JkIjoiIiwicGFzc3dvcmRTYWx0IjoiIiwicGFzc3dvcmRUeXBlIjoicGxhaW4iLCJkaXNwbGF5TmFtZSI6ImZhbmd4dWVqaWFuIiwiZmlyc3ROYW1lIjoiIiwibGFzdE5hbWUiOiIiLCJhdmF0YXIiOiJodHRwczovL2Nkbi5jYXNiaW4ub3JnL2ltZy9jYXNiaW4uc3ZnIiwiYXZhdGFyVHlwZSI6IiIsInBlcm1hbmVudEF2YXRhciI6IiIsImVtYWlsIjoiIiwiZW1haWxWZXJpZmllZCI6ZmFsc2UsInBob25lIjoiMTM1MDE5Nzg2OTgiLCJjb3VudHJ5Q29kZSI6IkNOIiwicmVnaW9uIjoiIiwibG9jYXRpb24iOiIiLCJhZGRyZXNzIjpbXSwiYWZmaWxpYXRpb24iOiIiLCJ0aXRsZSI6IiIsImlkQ2FyZFR5cGUiOiIiLCJpZENhcmQiOiIiLCJob21lcGFnZSI6IiIsImJpbyI6IiIsImxhbmd1YWdlIjoiIiwiZ2VuZGVyIjoiIiwiYmlydGhkYXkiOiIiLCJlZHVjYXRpb24iOiIiLCJzY29yZSI6MCwia2FybWEiOjAsInJhbmtpbmciOjEyNywiaXNEZWZhdWx0QXZhdGFyIjpmYWxzZSwiaXNPbmxpbmUiOmZhbHNlLCJpc0FkbWluIjpmYWxzZSwiaXNGb3JiaWRkZW4iOmZhbHNlLCJpc0RlbGV0ZWQiOmZhbHNlLCJzaWdudXBBcHBsaWNhdGlvbiI6ImRhdGEtY29sbGVjdG9yLWFwcGxpY2F0aW9uIiwiaGFzaCI6IiIsInByZUhhc2giOiIiLCJhY2Nlc3NLZXkiOiIiLCJhY2Nlc3NTZWNyZXQiOiIiLCJnaXRodWIiOiIiLCJnb29nbGUiOiIiLCJxcSI6IiIsIndlY2hhdCI6IiIsImZhY2Vib29rIjoiIiwiZGluZ3RhbGsiOiIiLCJ3ZWlibyI6IiIsImdpdGVlIjoiIiwibGlua2VkaW4iOiIiLCJ3ZWNvbSI6IiIsImxhcmsiOiIiLCJnaXRsYWIiOiIiLCJjcmVhdGVkSXAiOiIiLCJsYXN0U2lnbmluVGltZSI6IiIsImxhc3RTaWduaW5JcCI6IiIsInByZWZlcnJlZE1mYVR5cGUiOiIiLCJyZWNvdmVyeUNvZGVzIjpudWxsLCJ0b3RwU2VjcmV0IjoiIiwibWZhUGhvbmVFbmFibGVkIjpmYWxzZSwibWZhRW1haWxFbmFibGVkIjpmYWxzZSwibGRhcCI6IiIsInByb3BlcnRpZXMiOnt9LCJyb2xlcyI6W10sInBlcm1pc3Npb25zIjpbXSwiZ3JvdXBzIjpbXSwibGFzdFNpZ25pbldyb25nVGltZSI6IiIsInNpZ25pbldyb25nVGltZXMiOjAsIm1hbmFnZWRBY2NvdW50cyI6bnVsbCwidG9rZW5UeXBlIjoiYWNjZXNzLXRva2VuIiwidGFnIjoiIiwic2NvcGUiOiJhbGwiLCJhenAiOiI5NTI1OWJlNjBkMTk2MmFkN2Q1MSIsImlzcyI6Imh0dHBzOi8vc2luZ2xlLXNpZ24tb24tc2VydmljZS5kYXRhLWFwcHMuc3ZjLmNsdXN0ZXIubG9jYWwiLCJzdWIiOiJkMzc5MDViMy1hMWMxLTQ3ZTUtOTU2Yy1lM2YxZGYyNDAwMDQiLCJhdWQiOlsiOTUyNTliZTYwZDE5NjJhZDdkNTEiXSwiZXhwIjoxNzY4NTU5MjgxLCJuYmYiOjE3Njg1NDQ4ODEsImlhdCI6MTc2ODU0NDg4MSwianRpIjoiYWRtaW4vYjhiNzNjYzYtNmE2NS00ZDdlLTlkMTktMGU2Y2RkZTU1YTI3In0.TQbZcJHtalpHlO-sLFj8i2xChBEkMLaThJr2V0yzQxSgN0HtRY0yioECuUz90NTd9s1CtJ7kp1-PJx4y8QanXfc4SVenTAMZyYkKddGrJ9ZXstHs5WOIp2D0Di9GoE9w5YYdCbf9LMWUlHia3wWUrWIvyM3KmMrCVCCXXIkkIuOvBKdtmoWasLiLSzcK-ZNuFAZ5LyYnqNhnLuYcmfMwKyFJ3o4QYknsYk_6H4SiYMawwPhI0iX4mJl3wz90ts37blLDDtXdgVqPMlvC_rxXLlEC82md6PCC2IwX7XC-YaYd3hVcF8QZWuRw0hObTzcBQZaYZmnSd37GdlKkaqQ47QCHw54YorVdEftau08ICnYacDz0gsy9OsrlfLddsp6UmT4Fq40O9gIPF3ZMHJk0i3PnIXFPWenxCI7OBUSvHzVRG-3dYrxZuUZ1SC_6lcM6Bn9hWdH5hI2UrliQMyMGiyOPY3k9jf-Rl5Y5jq8eI-jmktcmyOieLBlyEbbAUZxK2spkDb-0-BoApL7Q8-y525mkuasGdHjIBJE4HSYQTMHOGfUVxbiA0rZBQegYlOHgmqs72hzeQI0HqWyxMRV7zTkwuiqRYnsBukOQ12CqzN0DGNdolHTtcO6SgBRsSmVeVfJl8BYo2NNPvjGIbC9-xDNv_d_4YQzfP8KG_OfzlME"
 
   dry_run: false
   verify_tls: true

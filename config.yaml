@@ -81,10 +81,6 @@ download:
   # e.g. "C:\\path\\to\\obsutil.exe"
   obsutil_exe: null
 
-  # 固定落盘目录：repo_dir/collect
-  # 说明：用于保存从 OBS 下载的原始 collect 目录结构（或中间搬运产物）
-  download_dirname: "collect"
-
   # pipeline 期望目录：repo_dir/obs_download
   # 说明：download 最终会把任务分组搬运到这个目录下，供后续 steps 读取
   obs_download_rootname: "obs_download"
@@ -116,6 +112,30 @@ download:
 
   # taskid 目录名正则（默认 32 位 hex）
   taskid_regex: '^[0-9a-f]{32}$'
+
+  # 是否启用 CSV 读取模式
+  # - false: 使用 obs_prefix 单一路径下载（原模式）
+  # - true : 读取 CSV，多路径下载（taskid list 模式）
+  csv_mode: false
+
+  # CSV 文件路径（相对 repo_root 或绝对路径都可）
+  csv_path: "task_id.csv"
+
+  # CSV 中 taskid 所在列名（支持带表头的 CSV）
+  # 如果你的 CSV 没有表头，可以设为 null，并使用 csv_col_index
+  csv_col_name: "task_id"
+
+  # CSV 列索引（0-based），仅当 csv_col_name 为 null 时生效
+  csv_col_index: 0
+
+  # 是否跳过首行（仅当你没有表头但第一行是说明时用）
+  csv_skip_header: false
+
+  # 拼接方式：obs_prefix(作为 base) + taskid + "/"
+  # true: 每行视作 taskid，拼成 data-collector-svc/collect/<taskid>/
+  # false: 每行视作完整 prefix（更通用，但你现在主要用 true）
+  csv_rows_are_taskid: true
+
 
 
 # ==============================================================================

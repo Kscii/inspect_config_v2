@@ -3,23 +3,43 @@
 """
 download step
 职责：
-1) 从 OBS 下载数据到“当前路径（repo_root）”（即 obsutil cp obs://{bucket}/{prefix} -> repo_root）
-2) 下载完成后，将本地产物中名为 download_dirname（默认 collect）的目录改名为 obs_download_rootname（默认 obs_download）
-3) 在本地将任务按“构型(model)”自动发现并分组到 repo_root/obs_download/<model>/<taskid>/...
+1) 从 OBS 下载数据到 repo_root（obsutil cp obs://{bucket}/{prefix} -> repo_root）
+2) 不再做“collect -> obs_download”的整目录改名/替换
+3) 直接把 taskid 目录移动到：repo_root/obs_download/<model>/<taskid>/...
 4) 支持 skip_download / full_refresh / dry_run / 重试 / taskid 过滤等
+5) 支持 CSV 多前缀下载模式（可选）
+
+collect_root 规则（单前缀模式）：
+- collect_root = repo_root / basename(obs_prefix)
+  - obs_prefix=data-collector-svc/collect/ -> collect_root=repo_root/collect
+  - obs_prefix=data-collector-svc/collect/<taskid>/ -> collect_root=repo_root/<taskid>
+
+重要变更（按你的要求）：
+- 删除所有“重命名目录（collect->obs_download）”相关代码
+- 改为和老实现一致：直接移动 taskid 目录到 obs_download/<model>/<taskid>
+
+CSV 模式（csv_mode=true）：
+- 读取 csv_path
+- 每行：
+  - 若 csv_rows_are_taskid=true：行值当作 taskid，拼为 obs_prefix + taskid + "/"
+  - 否则：行值当作完整 prefix
+- 对每个 prefix 执行 obsutil cp -> repo_root
+- 下载后落盘目录通常是 repo_root/basename(prefix)，若 basename 看起来像 taskid，则把该目录当作 task_dir 直接搬入
 """
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -30,7 +50,6 @@ class DownloadResult:
     obs_download_root: Path
 
 
-# 先正则快速找 model，命中就不必 json.loads（对大 json 很省）
 _MODEL_RE = re.compile(r'"model"\s*:\s*"([^"]+)"', re.IGNORECASE)
 _ROBOT_MODEL_RE = re.compile(r'"robotModel"\s*:\s*"([^"]+)"', re.IGNORECASE)
 
@@ -41,13 +60,6 @@ def run_step(
     step_cfg: Dict[str, Any],
     runtime: Dict[str, Any],
 ) -> DownloadResult:
-    """
-    入口函数：runner 会调用这个函数。
-    - repo_root: 仓库根目录（也就是你说的“当前路径”）
-    - global_cfg: config.yaml 的 global 段（runner 会注入 presets）
-    - step_cfg: config.yaml 的 download 段
-    - runtime: runner 注入的运行时信息（logger/log_mode/dry_run 等）
-    """
     logger = runtime.get("logger")
     log_mode = runtime.get("log_mode", global_cfg.get("log_mode"))
     global_dry_run = bool(runtime.get("dry_run", global_cfg.get("dry_run")))
@@ -60,17 +72,18 @@ def run_step(
     current_preset = step_cfg["current_preset"]
     bucket = presets[current_preset]["obs_bucket"]
 
-    obs_prefix = step_cfg["obs_prefix"]
-    obs_prefix_norm = obs_prefix.lstrip("/")  # 仅用于日志/兼容查找
+    obs_prefix = str(step_cfg["obs_prefix"])
+    obs_prefix_norm = obs_prefix.lstrip("/")
 
     # -------------------------
-    # 本地目录命名（按配置）
+    # 本地目录命名
     # -------------------------
-    download_dirname = str(step_cfg.get("download_dirname"))  # 通常是 collect
     obs_download_rootname = str(step_cfg.get("obs_download_rootname"))
-
-    collect_root = repo_root / download_dirname
     obs_download_root = repo_root / obs_download_rootname
+
+    # 单前缀模式的 collect_root = repo_root/<basename(obs_prefix)>
+    leaf = _basename_of_prefix(obs_prefix)
+    collect_root = repo_root / leaf
 
     # -------------------------
     # 下载/搬运相关配置
@@ -89,147 +102,308 @@ def run_step(
 
     illegal_win_pattern = step_cfg.get("illegal_win_pattern")
     taskid_regex = step_cfg.get("taskid_regex")
-    illegal_win_re = re.compile(illegal_win_pattern)
-    taskid_re = re.compile(taskid_regex, re.IGNORECASE)
+    illegal_win_re = re.compile(str(illegal_win_pattern))
+    taskid_re = re.compile(str(taskid_regex), re.IGNORECASE)
 
     # -------------------------
-    # 0) full_refresh：清理旧目录
+    # CSV 模式配置（可选）
+    # -------------------------
+    csv_mode = bool(step_cfg.get("csv_mode", False))
+    csv_path = step_cfg.get("csv_path", "taskids.csv")
+    csv_col_name = step_cfg.get("csv_col_name", "taskid")
+    csv_col_index = int(step_cfg.get("csv_col_index", 0))
+    csv_skip_header = bool(step_cfg.get("csv_skip_header", False))
+    csv_rows_are_taskid = bool(step_cfg.get("csv_rows_are_taskid", True))
+
+    _log(logger, log_mode, f"[download] resolved obs_download_root={obs_download_root}")
+    _log(logger, log_mode, f"[download] resolved collect_root={collect_root} (leaf={leaf}, obs_prefix={obs_prefix})")
+    _log(logger, log_mode, f"[download] csv_mode={csv_mode}")
+
+    # -------------------------
+    # 0) full_refresh：只在一开始清理（后面不再做任何删除）
     # -------------------------
     if full_refresh:
+        # 注意：CSV 模式下可能落盘到多个叶子目录，这里只清理：
+        # - obs_download_root（统一产物）
+        # - 单前缀模式推导的 collect_root（保持兼容）
         _log(logger, log_mode, f"[download] full_refresh=True -> 清理 {collect_root} 和 {obs_download_root}")
         if not dry_run:
-            shutil.rmtree(collect_root, ignore_errors=True)
-            shutil.rmtree(obs_download_root, ignore_errors=True)
+            _rmtree_force(collect_root)
+            _rmtree_force(obs_download_root)
 
     # -------------------------
     # 1) 下载（可选）
     # -------------------------
-    if not skip_download:
-        _log(logger, log_mode, f"[download] 开始从 OBS 下载到当前路径：bucket={bucket}, prefix={obs_prefix}, dst={repo_root}")
-        _obsutil_cp_prefix_to_repo_root(
-            obsutil_exe=obsutil_exe,
-            bucket=bucket,
-            obs_prefix=obs_prefix,
+    prefixes_to_download: List[str] = []
+    if csv_mode:
+        # base prefix 用于拼接（当 csv_rows_are_taskid=True）
+        base_prefix = obs_prefix
+        rows = _read_csv_rows(
             repo_root=repo_root,
-            parallel=parallel,
-            jobs=jobs,
-            force=force,
-            dry_run=dry_run,
+            csv_path=csv_path,
+            col_name=csv_col_name,
+            col_index=csv_col_index,
+            skip_header=csv_skip_header,
             logger=logger,
+            log_mode=log_mode,
         )
+        if csv_rows_are_taskid:
+            # base_prefix + taskid + "/"
+            base = _ensure_trailing_slash(base_prefix.lstrip("/"))
+            for r in rows:
+                rid = (r or "").strip().strip("/")
+                if not rid:
+                    continue
+                prefixes_to_download.append(base + rid + "/")
+        else:
+            for r in rows:
+                rr = (r or "").strip()
+                if rr:
+                    prefixes_to_download.append(rr)
     else:
-        _log(logger, log_mode, "[download] skip_download=True -> 跳过下载，仅做改名与分组（要求本地已有下载产物）")
+        prefixes_to_download = [obs_prefix]
+
+    if not skip_download:
+        for pfx in prefixes_to_download:
+            _log(logger, log_mode, f"[download] OBS download: bucket={bucket}, prefix={pfx}, dst={repo_root}")
+            _obsutil_cp_prefix_to_repo_root(
+                obsutil_exe=obsutil_exe,
+                bucket=bucket,
+                obs_prefix=pfx,
+                repo_root=repo_root,
+                parallel=parallel,
+                jobs=jobs,
+                force=force,
+                dry_run=dry_run,
+                logger=logger,
+            )
+    else:
+        _log(logger, log_mode, "[download] skip_download=True -> 跳过下载，仅做搬运/分组")
 
     # -------------------------
-    # 2) 将下载出来的 “collect” 改名为 “obs_download”
+    # 2) 收集“来源目录/来源task”
+    #
+    # 目标：把所有可见的 taskid 目录都搬到：
+    #   obs_download/<model>/<taskid>
+    #
+    # 来源可能包括：
+    # - repo/obs_download 下直接有 taskid（一层未分组） -> 补分组
+    # - 单前缀：collect_root（repo/collect 或 repo/<taskid>）
+    # - CSV 模式：对每个 prefix 的 basename(prefix) -> repo_root/<leaf>（通常是 taskid）
     # -------------------------
-    downloaded_root = _find_downloaded_collect_root(
-        repo_root=repo_root,
-        expect_collect_root=collect_root,
-        obs_prefix_norm=obs_prefix_norm,
+    sources: List[Path] = []
+
+    # (a) obs_download 若存在，也作为来源（可能未分组）
+    if obs_download_root.exists() and obs_download_root.is_dir():
+        sources.append(obs_download_root)
+
+    # (b) 单前缀 collect_root 若存在
+    if collect_root.exists() and collect_root.is_dir():
+        if not obs_download_root.exists() or collect_root.resolve() != obs_download_root.resolve():
+            sources.append(collect_root)
+
+    # (c) CSV 模式：每个 prefix 的 leaf 目录（如果存在）
+    if csv_mode:
+        for pfx in prefixes_to_download:
+            lf = _basename_of_prefix(pfx)
+            p = repo_root / lf
+            if p.exists() and p.is_dir():
+                # 避免重复塞入 obs_download_root / collect_root
+                if p.resolve() == obs_download_root.resolve():
+                    continue
+                if collect_root.exists() and p.resolve() == collect_root.resolve():
+                    continue
+                sources.append(p)
+
+    if not sources:
+        raise FileNotFoundError(
+            f"本地未找到可用数据目录：既没有 {obs_download_root} 也没有 {collect_root}，"
+            f"也没有任何 CSV leaf 目录。 (skip_download={skip_download}, csv_mode={csv_mode})"
+        )
+
+    if not dry_run:
+        obs_download_root.mkdir(parents=True, exist_ok=True)
+
+    # -------------------------
+    # 3) 对每个来源，把 taskid 目录直接搬到 obs_download/<model>/<taskid>
+    # -------------------------
+    model_set: set[str] = set()
+
+    for src in sources:
+        # 情况1：src 本身就是一个 taskid 目录（常见于 obs_prefix=.../<taskid>/ 或 CSV leaf）
+        if _looks_like_task_dir(src, taskid_re=taskid_re):
+            _log(logger, log_mode, f"[download] source is a task_dir: {src}")
+            moved_model = _move_one_taskdir_into_model(
+                task_dir=src,
+                obs_download_root=obs_download_root,
+                default_model=default_model,
+                illegal_win_re=illegal_win_re,
+                move_retries=move_retries,
+                dry_run=dry_run,
+                logger=logger,
+                log_mode=log_mode,
+            )
+            if moved_model:
+                model_set.add(moved_model)
+            continue
+
+        # 情况2：src 是容器目录：只处理它“一层的 taskid 目录”
+        task_dirs = _list_direct_task_dirs(src, taskid_re=taskid_re, filter_taskid_dirs=filter_taskid_dirs)
+
+        # 如果 src 已经是“obs_download/<model>/<taskid>”这种结构，则它一层不会有 taskid
+        # 这时跳过（避免把 model 当 task 去搬）
+        if not task_dirs:
+            if _looks_like_grouped_root(src, taskid_re=taskid_re):
+                _log(logger, log_mode, f"[download] detected grouped root -> skip regroup: {src}")
+                # 记录已有 models（仅用于返回）
+                try:
+                    for p in src.iterdir():
+                        if p.is_dir():
+                            model_set.add(p.name)
+                except Exception:
+                    pass
+            else:
+                _log(logger, log_mode, f"[download] no direct taskid dirs found in: {src} (skip)")
+            continue
+
+        _log(logger, log_mode, f"[download] found direct taskid dirs: {len(task_dirs)} in {src}")
+
+        for task_dir in task_dirs:
+            moved_model = _move_one_taskdir_into_model(
+                task_dir=task_dir,
+                obs_download_root=obs_download_root,
+                default_model=default_model,
+                illegal_win_re=illegal_win_re,
+                move_retries=move_retries,
+                dry_run=dry_run,
+                logger=logger,
+                log_mode=log_mode,
+            )
+            if moved_model:
+                model_set.add(moved_model)
+
+    models = sorted(model_set)
+    _log(logger, log_mode, f"[download] discovered models={models}")
+
+    # collect_root/obs_download_root 字段：为了兼容后续 steps
+    # pipeline 应读取的根——永远是 obs_download_root
+    return DownloadResult(models=models, collect_root=collect_root, obs_download_root=obs_download_root)
+
+
+# =============================================================================
+# 核心：移动 task_dir -> obs_download/<model>/<taskid>
+# =============================================================================
+
+def _move_one_taskdir_into_model(
+    *,
+    task_dir: Path,
+    obs_download_root: Path,
+    default_model: str,
+    illegal_win_re: re.Pattern,
+    move_retries: int,
+    dry_run: bool,
+    logger,
+    log_mode: str,
+) -> Optional[str]:
+    taskid = task_dir.name
+
+    # 已经在 obs_download/<model>/<taskid> 内的情况：跳过
+    try:
+        if task_dir.parent.parent.resolve() == obs_download_root.resolve():
+            _log(logger, log_mode, f"[download] already grouped task -> skip: {task_dir}")
+            return task_dir.parent.name
+    except Exception:
+        pass
+
+    sample_json = _pick_sample_json_fast(task_dir)
+    model = _detect_model_from_collect_json_fast(
+        sample_json,
+        default_model=default_model,
         logger=logger,
         log_mode=log_mode,
     )
-    if downloaded_root is None:
-        raise FileNotFoundError(
-            f"未找到下载产物目录：期望 {collect_root} 或可从 prefix 推断的目录。"
-            f"repo_root={repo_root}, obs_prefix={obs_prefix}"
-        )
+    model = _sanitize_name(model, illegal_win_re=illegal_win_re, fallback=default_model)
 
-    if downloaded_root.resolve() != collect_root.resolve():
-        _log(logger, log_mode, f"[download] 下载产物目录与期望不一致：actual={downloaded_root} expect={collect_root} -> 先统一到 expect")
-        if not dry_run:
-            if collect_root.exists():
-                shutil.rmtree(collect_root, ignore_errors=True)
-            shutil.move(str(downloaded_root), str(collect_root))
+    dst = obs_download_root / model / taskid
 
-    if not collect_root.exists():
-        raise FileNotFoundError(f"collect_root not found after download/normalize: {collect_root}")
+    # 源和目标完全一致：跳过
+    try:
+        if task_dir.resolve() == dst.resolve():
+            _log(logger, log_mode, f"[download] src==dst -> skip: {task_dir}")
+            return model
+    except Exception:
+        pass
 
-    _log(logger, log_mode, f"[download] 改名：{collect_root.name} -> {obs_download_root.name}")
-    if not dry_run:
-        if obs_download_root.exists():
-            shutil.rmtree(obs_download_root, ignore_errors=True)
-        shutil.move(str(collect_root), str(obs_download_root))
+    # 目标已存在：按老实现风格，跳过（不覆盖）
+    if dst.exists():
+        _log(logger, log_mode, f"[download] dst exists -> skip: {dst}")
+        return model
 
-    working_root = obs_download_root if not dry_run else collect_root
+    _log(logger, log_mode, f"[download] MOVE task={taskid} -> {dst}")
 
-    # -------------------------
-    # 3) 自动发现 taskid 目录，并按 model 分组到 obs_download/<model>/<taskid>/...
-    # -------------------------
-    if not working_root.exists():
-        raise FileNotFoundError(f"working_root not found: {working_root}")
+    if dry_run:
+        return model
 
-    # 更快的扫描：os.scandir（避免 Path.iterdir 产生大量对象开销）
-    task_dirs: List[Path] = []
-    with os.scandir(working_root) as it:
-        for e in it:
-            if e.is_dir():
-                task_dirs.append(Path(e.path))
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    _move_dir_with_retry(src=task_dir, dst=dst, retries=move_retries, logger=logger, log_mode=log_mode, tag="task_to_model")
 
-    if filter_taskid_dirs:
-        task_dirs = [p for p in task_dirs if taskid_re.match(p.name or "")]
-    else:
-        # 软过滤：优先只取像 taskid 的目录；如果一个都匹配不到则全放行
-        filtered = [p for p in task_dirs if taskid_re.match(p.name or "")]
-        task_dirs = filtered or task_dirs
-
-    _log(logger, log_mode, f"[download] 扫描 task 目录数：{len(task_dirs)} (filter_taskid_dirs={filter_taskid_dirs})")
-
-    model_set: set[str] = set()
-
-    # 不强依赖顺序时不要 sorted（避免额外 O(n log n) + 字符串比较）
-    # 如果你确实需要稳定顺序，可以把下面这一行取消注释：
-    # task_dirs = sorted(task_dirs, key=lambda x: x.name)
-
-    for task_dir in task_dirs:
-        if not task_dir.is_dir():
-            continue
-
-        # 只需要判断“有没有 episode 子目录”，不做全量 list/sorted
-        if not _has_any_subdir(task_dir):
-            continue
-
-        sample_json = _pick_sample_json_fast(task_dir)
-        model = _detect_model_from_collect_json_fast(
-            sample_json,
-            default_model=default_model,
-            logger=logger,
-            log_mode=log_mode,
-        )
-        model = _sanitize_name(model, illegal_win_re=illegal_win_re, fallback=default_model)
-        model_set.add(model)
-
-        dst_task_dir = working_root / model / task_dir.name
-        _log(logger, log_mode, f"[download] task={task_dir.name} -> model={model} -> {dst_task_dir}")
-
-        if dry_run:
-            continue
-
-        # 关键优化：优先 O(1) rename/move；仅当 dst 已存在才 fallback 合并 copytree
-        _move_task_dir_fast(
-            src=task_dir,
-            dst=dst_task_dir,
-            retries=move_retries,
-            logger=logger,
-            log_mode=log_mode,
-        )
-
-    models = sorted(model_set)
-    _log(logger, log_mode, f"[download] 自动发现构型：{models}")
-
-    return DownloadResult(models=models, collect_root=working_root, obs_download_root=working_root)
+    return model
 
 
 # =============================================================================
 # 内部工具函数
 # =============================================================================
 
+def _ensure_trailing_slash(p: str) -> str:
+    s = (p or "").strip()
+    if not s:
+        return ""
+    return s if s.endswith("/") else (s + "/")
+
+
+def _basename_of_prefix(obs_prefix: str) -> str:
+    """
+    取 obs_prefix 的“最下层路径段”作为本地下载目录名：
+    - "data-collector-svc/collect/" -> "collect"
+    - "data-collector-svc/collect/0343.../" -> "0343..."
+    - "data-collector-svc/collect/0343..." -> "0343..."
+    """
+    s = (obs_prefix or "").strip().strip("/")
+    if not s:
+        return "collect"
+    parts = [p for p in s.split("/") if p]
+    return parts[-1] if parts else "collect"
+
+
 def _log(logger, log_mode: str, msg: str) -> None:
     if logger is None:
         print(msg)
         return
     logger.info(msg)
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _rmtree_force(p: Path) -> None:
+    if not p.exists():
+        return
+
+    def _onerror(func, path, exc_info):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+        except Exception:
+            pass
+        try:
+            func(path)
+        except Exception:
+            pass
+
+    try:
+        shutil.rmtree(p, onerror=_onerror)
+    except Exception:
+        pass
 
 
 def _obsutil_cp_prefix_to_repo_root(
@@ -243,7 +417,6 @@ def _obsutil_cp_prefix_to_repo_root(
     dry_run: bool,
     logger,
 ) -> None:
-    """使用 obsutil 将 obs://bucket/obs_prefix 整体拉到 repo_root（当前路径）"""
     exe = obsutil_exe or "obsutil"
     src = f"obs://{bucket}/{obs_prefix.lstrip('/')}"
     dst = str(repo_root)
@@ -274,28 +447,74 @@ def _obsutil_cp_prefix_to_repo_root(
         raise RuntimeError(f"obsutil cp failed, returncode={proc.returncode}")
 
 
-def _find_downloaded_collect_root(
-    repo_root: Path,
-    expect_collect_root: Path,
-    obs_prefix_norm: str,
-    logger,
-    log_mode: str,
-) -> Optional[Path]:
-    # 目前仍保持你原来的最严格行为：只认 repo_root/collect
-    if expect_collect_root.exists() and expect_collect_root.is_dir():
-        return expect_collect_root
-    return None
-
-
-def _has_any_subdir(d: Path) -> bool:
-    """比 list(itertools) 更省：只要找到一个子目录就返回 True"""
+def _looks_like_task_dir(p: Path, taskid_re: re.Pattern) -> bool:
+    """
+    判断 p 是否“更像 task 目录本身”：
+    - 名字匹配 taskid_regex（强判定）
+    - 或者内部有 episode 子目录（弱判定，避免未来 taskid_regex 变化）
+    """
     try:
-        with os.scandir(d) as it:
+        if taskid_re.match(p.name or ""):
+            return True
+    except Exception:
+        pass
+
+    try:
+        with os.scandir(p) as it:
             for e in it:
                 if e.is_dir():
                     return True
-    except FileNotFoundError:
+    except Exception:
         return False
+    return False
+
+
+def _list_direct_task_dirs(root: Path, taskid_re: re.Pattern, filter_taskid_dirs: bool) -> List[Path]:
+    """
+    只列出 root 下一层的 taskid 目录，避免把 model 目录当 task 搬走。
+    - filter_taskid_dirs=True：严格只取匹配 taskid_regex 的目录
+    - filter_taskid_dirs=False：若能找到匹配 taskid_regex 的目录，就只用这些；否则返回空（宁可不搬，避免误搬）
+    """
+    children: List[Path] = []
+    try:
+        with os.scandir(root) as it:
+            for e in it:
+                if e.is_dir():
+                    children.append(Path(e.path))
+    except FileNotFoundError:
+        return []
+
+    matched = [p for p in children if taskid_re.match(p.name or "")]
+    if filter_taskid_dirs:
+        return matched
+
+    return matched
+
+
+def _looks_like_grouped_root(root: Path, taskid_re: re.Pattern) -> bool:
+    """
+    判断 root 是否已经是 obs_download/<model>/<taskid> 结构：
+    - root 下一层没有 taskid
+    - 但 root 下一层的某些目录内部有 taskid 子目录
+    """
+    try:
+        children = [p for p in root.iterdir() if p.is_dir()]
+    except Exception:
+        return False
+
+    direct_task = any(taskid_re.match(p.name or "") for p in children)
+    if direct_task:
+        return False
+
+    for mdir in children[: min(5, len(children))]:
+        try:
+            with os.scandir(mdir) as it:
+                for e in it:
+                    if e.is_dir() and taskid_re.match(e.name or ""):
+                        return True
+        except Exception:
+            continue
+
     return False
 
 
@@ -319,7 +538,6 @@ def _pick_sample_json_fast(task_dir: Path) -> Optional[Path]:
     if first_ep is None:
         return None
 
-    # 优先 *_collect.json
     try:
         for p in first_ep.glob("*_collect.json"):
             return p
@@ -333,8 +551,8 @@ def _pick_sample_json_fast(task_dir: Path) -> Optional[Path]:
 def _detect_model_from_collect_json_fast(sample_json: Optional[Path], default_model: str, logger, log_mode: str) -> str:
     """
     识别构型（model）的启发式逻辑（性能优化版）：
-    1) 先 regex 从文本里抓 "model":"xxx" / "robotModel":"xxx"
-    2) 再 json.loads + 轻量 key 查找
+    1) regex 抓 "model":"xxx" / "robotModel":"xxx"
+    2) json.loads + 深搜 key
     3) 兜底 default_model
     """
     if sample_json is None or not sample_json.exists():
@@ -360,24 +578,11 @@ def _detect_model_from_collect_json_fast(sample_json: Optional[Path], default_mo
         _log(logger, log_mode, f"[download] 解析样本 json 失败：{sample_json} err={e}")
         return default_model
 
-    v = _get_by_path(data, ("model",))
-    if isinstance(v, str) and v.strip():
-        return v.strip()
-
     v2 = _deep_find_first_key(data, keys={"model", "robotModel"})
     if isinstance(v2, str) and v2.strip():
         return v2.strip()
 
     return default_model
-
-
-def _get_by_path(obj: Any, path: Tuple[str, ...]) -> Any:
-    cur = obj
-    for k in path:
-        if not isinstance(cur, dict) or k not in cur:
-            return None
-        cur = cur[k]
-    return cur
 
 
 def _deep_find_first_key(obj: Any, keys: set[str]) -> Any:
@@ -406,56 +611,78 @@ def _sanitize_name(name: str, illegal_win_re: re.Pattern, fallback: str) -> str:
     return s or fallback
 
 
-def _move_task_dir_fast(src: Path, dst: Path, retries: int, logger, log_mode: str) -> None:
+def _move_dir_with_retry(src: Path, dst: Path, retries: int, logger, log_mode: str, tag: str) -> None:
     """
-    性能关键：
-    - dst 不存在：用 os.replace 直接 rename（同盘 O(1)）
-    - dst 已存在：才 fallback 到 copytree 合并（慢，但极少触发）
+    与老实现一致：
+    - 同盘优先 src.rename(dst)（速度最快）
+    - PermissionError 重试（适配 Defender/索引器占用）
+    - 最后 fallback 到 shutil.move
     """
-    dst.parent.mkdir(parents=True, exist_ok=True)
-
-    # 常见路径：目标不存在 -> O(1) rename
-    if not dst.exists():
-        last_err: Optional[Exception] = None
-        for i in range(max(1, retries)):
-            try:
-                os.replace(str(src), str(dst))
-                return
-            except PermissionError as e:
-                last_err = e
-                _log(logger, log_mode, f"[download] move PermissionError 重试 {i+1}/{retries} src={src} dst={dst}")
-                time.sleep(0.5 * (i + 1))
-            except OSError as e:
-                # 例如跨盘、文件系统不支持 rename 等
-                last_err = e
-                break
-
-        _log(logger, log_mode, f"[download] move rename 失败，fallback copytree: src={src} dst={dst} last_err={last_err}")
-
-    # 兜底：合并 copy（慢）
-    _copytree_with_retries(
-        src=src,
-        dst=dst,
-        retries=retries,
-        logger=logger,
-        log_mode=log_mode,
-    )
-    shutil.rmtree(src, ignore_errors=True)
-
-
-def _copytree_with_retries(src: Path, dst: Path, retries: int, logger, log_mode: str) -> None:
-    """复制目录（支持 dirs_exist_ok=True 合并），对 Windows PermissionError 做重试。"""
-    dst.parent.mkdir(parents=True, exist_ok=True)
     last_err: Optional[Exception] = None
-    for i in range(max(1, retries)):
+    attempts = max(1, int(retries) if retries else 1)
+
+    for i in range(1, attempts + 1):
         try:
-            shutil.copytree(src, dst, dirs_exist_ok=True)
+            src.rename(dst)
             return
         except PermissionError as e:
             last_err = e
-            _log(logger, log_mode, f"[download] copytree PermissionError 重试 {i+1}/{retries} src={src} dst={dst}")
-            time.sleep(0.5 * (i + 1))
-        except Exception as e:
+            _log(logger, log_mode, f"[download] PermissionError move retry {i}/{attempts} tag={tag} src={src} dst={dst}")
+            time.sleep(min(0.35 * i, 5.0))
+        except OSError as e:
             last_err = e
-            break
-    raise RuntimeError(f"copytree failed after retries={retries}, last_err={last_err}")
+            _log(logger, log_mode, f"[download] OSError move retry {i}/{attempts} tag={tag} src={src} dst={dst} err={e}")
+            time.sleep(min(0.35 * i, 5.0))
+
+    # fallback
+    try:
+        shutil.move(str(src), str(dst))
+    except Exception as e:
+        raise RuntimeError(f"Move failed tag={tag} src={src} dst={dst} last_err={last_err} final_err={e}") from e
+
+
+def _read_csv_rows(
+    *,
+    repo_root: Path,
+    csv_path: str,
+    col_name: Optional[str],
+    col_index: int,
+    skip_header: bool,
+    logger,
+    log_mode: str,
+) -> List[str]:
+    """
+    读取 CSV，返回每行的目标字段字符串。
+    - csv_path 支持相对 repo_root 或绝对路径
+    - col_name 非空：按表头列名取值
+    - col_name 为空/None：按 col_index 取值（0-based）
+    - skip_header：仅当无表头但第一行是说明时用（会跳过第一行）
+    """
+    p = Path(csv_path)
+    if not p.is_absolute():
+        p = repo_root / p
+
+    if not p.exists():
+        raise FileNotFoundError(f"csv_path not found: {p}")
+
+    rows: List[str] = []
+    with p.open("r", encoding="utf-8-sig", newline="") as f:
+        if col_name is not None:
+            reader = csv.DictReader(f)
+            for i, r in enumerate(reader):
+                v = (r.get(col_name) or "").strip()
+                if v:
+                    rows.append(v)
+        else:
+            reader2 = csv.reader(f)
+            for i, r in enumerate(reader2):
+                if i == 0 and skip_header:
+                    continue
+                if col_index < 0 or col_index >= len(r):
+                    continue
+                v = (r[col_index] or "").strip()
+                if v:
+                    rows.append(v)
+
+    _log(logger, log_mode, f"[download] csv rows loaded: {len(rows)} from {p}")
+    return rows
