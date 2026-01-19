@@ -1,0 +1,391 @@
+# config.yaml
+# ==============================================================================
+# 统一配置文件（单一事实源）
+# 目标：
+# 1) 所有 step 的配置集中管理，便于扩展/新增 step
+# 2) 保持与重构前功能与配置项 100% 对齐（不减少配置项）
+# 3) 运行时构型列表不在这里配置：由 download 自动发现并完成任务分组落盘
+# 4) 遇到异常要能及时上报并中断：后续由 runner/step 统一实现
+# ==============================================================================
+
+version: 1
+
+# ==============================================================================
+# 全局配置（所有 step 可共享）
+# ==============================================================================
+global:
+  # 全局环境预设（dev/prod 两套 URL/OBS 基本不需要改）
+  # 说明：每个需要“环境差异”的 step 只需要配置自己的 current_preset（dev 或 prod）
+  steps_to_run:
+    - download
+    - selectors
+    - collect
+    - find_range
+    - test_range
+    - pack_csv
+    - build_sql
+    - update_rule_api
+
+  presets:
+    dev:
+      # 开发环境 API 根地址
+      base_url: "https://dev-dojo-api.openloong.org.cn"
+      # 开发环境 OBS bucket
+      obs_bucket: "openloong-apps-dev-private"
+    prod:
+      # 生产环境 API 根地址（按你们实际地址填写/替换）
+      base_url: "https://prod-dojo-api.openloong.org.cn"
+      # 生产环境 OBS bucket
+      obs_bucket: "openloong-apps-prod-private"
+
+  # 统一日志目录名（落在 repo 根目录下）
+  log_dirname: "log"
+
+  # 日志模式：
+  # - normal：尽量保持你原来“console log/打印”的格式与信息量（默认）
+  # - debug ：输出更详细信息（包含更多上下文、更多步骤细节、更完整异常栈等）
+  log_mode: "normal"   # "normal" | "debug"
+
+  # 全局 dry-run（演练模式）
+  # 说明：若为 true，runner 会尽量要求各 step 不产生破坏性动作；
+  #       同时各 step 仍保留自己的 DRY_RUN 配置（后续代码会做 OR 合并）
+  dry_run: false
+
+  # 是否允许继续执行后续 step（全局容错）
+  # - false：任一步失败立即中断（推荐，符合你“及时上报和中断流程”）
+  # - true ：记录错误并继续（仅调试时可能用）
+  continue_on_error: false
+
+
+# ==============================================================================
+# Step: download（负责：下载/搬运/合并/分组；并自动发现构型）
+# ==============================================================================
+download:
+  # 当前使用哪个预设（dev/prod）
+  # 说明：
+  # - bucket 从 global.presets.<preset>.obs_bucket 读取
+  # - 你也可以把 current_preset 固定为 prod，并且只改 global.presets 中的 bucket/url
+  current_preset: "prod"
+
+  # OBS 前缀（末尾带 / 不带都行）
+  obs_prefix: "data-collector-svc/collect/"
+
+  # obsutil 并行参数：用于提升下载速度
+  parallel: 16
+  jobs: 16
+
+  # 是否强制覆盖 obsutil cp（等价于 obsutil 的 -f）
+  force: true
+
+  # obsutil 可执行文件：留空表示用 PATH 里的 obsutil
+  # e.g. "C:\\path\\to\\obsutil.exe"
+  obsutil_exe: null
+
+  # 固定落盘目录：repo_dir/collect
+  # 说明：用于保存从 OBS 下载的原始 collect 目录结构（或中间搬运产物）
+  download_dirname: "collect"
+
+  # pipeline 期望目录：repo_dir/obs_download
+  # 说明：download 最终会把任务分组搬运到这个目录下，供后续 steps 读取
+  obs_download_rootname: "obs_download"
+
+  # 开启后：不重新下载，只做“搬运/合并 + 分组 + 写 log”
+  # 说明：适合你已经有 collect 落盘，想重新分组/刷新 obs_download 的场景
+  skip_download: false
+
+  # True：完全覆盖过去的 obs_download（不考虑已存在内容，保证全量更新）
+  # 说明：你之前提到的“完全覆盖 collect 和 obs_download”的核心开关之一
+  full_refresh: true
+
+  # 当无法从数据中识别构型（model）时使用的兜底构型名
+  # 说明：最终会把该任务移动到 obs_download/_MODEL_MISSING_/...
+  default_model_if_missing: "_MODEL_MISSING_"
+
+  # 是否只演练（不实际移动/不实际下载）
+  # 说明：用于安全验证逻辑；如果 global.dry_run=true，这里也会被视为 true（后续代码实现）
+  dry_run: false
+
+  # Windows Defender/占用导致 PermissionError 时的重试次数
+  move_retries: 8
+
+  # 可选：只处理像 taskid 的目录（32 位 hex）。想更宽松就设为 False
+  filter_taskid_dirs: false
+
+  # 非法 Windows 文件名字符的正则（用于路径清洗/兼容）
+  illegal_win_pattern: "[<>:\"/\\\\|?*\\x00-\\x1F]"
+
+  # taskid 目录名正则（默认 32 位 hex）
+  taskid_regex: '^[0-9a-f]{32}$'
+
+
+# ==============================================================================
+# Step: selectors（负责：生成 selector 列表 + 过滤规则）
+# ==============================================================================
+selectors:
+  # -------------------------
+  # 规则 0：旧白名单（基于 .<> 内容）
+  # -------------------------
+  angle_allowlist:
+    # frame_align
+    - "start_diff_average_ms"
+    - "start_diff_joint_average_ms"
+    - "start_diff_camera_average_ms"
+    - "end_diff_average_ms"
+    - "end_diff_joint_average_ms"
+    - "end_diff_camera_average_ms"
+    - "delay_earliest_ms"
+    - "advance_latest_ms"
+    # frame_count
+    - "jitter_std_ms"
+    - "jitter_std_frames"
+    - "max_interval_ms"
+    - "max_interval_frames"
+    - "loss_pp"
+
+  # -------------------------
+  # 规则 1：新白名单（基于 selector 字符串本身）
+  # -------------------------
+  # 双层列表：每个内层至少 2 个字符串
+  # 命中规则：只要 **所有字符串都在同一个 selector 中出现** 即命中（不要求相邻）
+  charseq_allowlist:
+    - ["frame_count", ".<fps>"]                         # frame_count
+    - ["arm", "拟合评分"]                                # frame_fit
+    - ["camera_static_interval", ".<total_second_sum>"]  # camera_static_interval
+    - ["joint_motion_interval", ".<total_second_sum>"]   # joint_static_interval
+    - ["[<ruleCode>=<metadata_raw>]", "<rawDataMetric>"] # metadata_raw
+
+  # 新白名单匹配模式：
+  # - both     : 所有 seg 都出现在 selector 中（不要求顺序/相邻）
+  # - ordered  : 按列表顺序依次出现（中间允许有其它字符）
+  # - adjacent : 必须出现 seg1+seg2+... 的连续子串（严格）
+  charseq_match_mode: "both"
+
+  # 新白名单匹配是否区分大小写
+  charseq_case_sensitive: true
+
+  # -------------------------
+  # 规则 2：黑名单（基于 .<> 内容）
+  # -------------------------
+  angle_blocklist: []
+
+  # -------------------------
+  # 执行顺序（可配置）
+  # -------------------------
+  filter_order:
+    - "angle_allow_add"
+    - "char_allow_add"
+    - "angle_block_exclude"
+
+  # -------------------------
+  # 各规则开关 & 匹配模式
+  # -------------------------
+  # angle_allowlist 的匹配模式（exact/contains 等，按你原实现支持的取值来）
+  angle_match_mode: "exact"
+
+  # angle_blocklist 的匹配模式（exact/contains 等，按你原实现支持的取值来）
+  angle_block_match_mode: "exact"
+
+  # 总开关：是否启用过滤器
+  enable_filter: true
+
+  # 各子规则开关
+  enable_angle_allow_add: true
+  enable_charseq_allow_add: true
+  enable_angle_block_exclude: true
+
+  # 当两个 allowlist 都为空时，是否允许“全放行”
+  allow_all_if_no_allowlists: true
+
+  # -------------------------
+  # 随机一致性检查（只在 generate_selectors_txt 时触发）
+  # -------------------------
+  enable_random_consistency_check: false
+
+  # 随机抽样“不同 taskid 目录”的数量（每个 task 取 1 个 json）
+  consistency_sample_tasks: 100
+
+  # 随机种子：保证可复现（不想固定就设为 null）
+  consistency_random_seed: 0
+
+  # mismatch 时最多展示多少条差异 selector（避免刷屏）
+  consistency_diff_preview: 5
+
+
+# ==============================================================================
+# Step: collect（负责：从 json 中按 selector 收集值，输出 values.csv）
+# ==============================================================================
+collect:
+  # 是否开启“单文件输出”模式
+  # - false：每个 selector 一个 CSV（file,value）
+  # - true ：只输出一个 CSV（file, <selector1>, <selector2>, ...）
+  single_file_mode: true
+
+  # 扫描哪些文件（默认所有 .json）
+  json_suffix: ".json"
+
+  # CSV 编码（Windows Excel 兼容通常用 utf-8-sig）
+  csv_encoding: "utf-8-sig"
+
+  # 是否写 CSV 表头
+  csv_write_header: true
+
+  # CSV 中“文件名字段”的写法
+  # - basename ：只写文件名（不含目录）
+  # - relative ：写相对路径（相对 obs_download/<model>/...）
+  filename_in_csv: "basename"
+
+  # 严格模式
+  # - true ：遇到错误直接抛异常（runner 捕获后中断）
+  # - false：失败返回 None 或跳过（按你原逻辑）
+  strict_mode: false
+
+
+# ==============================================================================
+# Step: find_range（负责：根据 values.csv 估计区间，输出 ranges.csv）
+# ==============================================================================
+find_range:
+  method: "cover"          # "iqr" / "mad" / "cover"
+  iqr_k: 1.5
+  mad_z: 3.0
+  cover_pct: 0.95
+
+  min_valid_count: 2
+  clamp_to_observed: true
+  round_decimals: 6
+  expand_pct: 1
+
+  # 默认：同号约束 -> 扩张 -> 字段约束
+  step_order: ["sign", "expand", "field"]
+
+  sign_consistency_clamp: true
+  post_expand_sign_clamp: true
+
+  non_numeric_mark: "true"
+
+  force_non_numeric_field_rules:
+    - contains: ["metadata_raw"]
+
+  field_range_rules:
+    - contains: ["拟合评分"]
+      min_lo: 50
+      max_lo: 75
+      min_hi: 100
+      max_hi: 100
+
+    - contains: ["delay_earliest_ms"]
+      min_lo: 0
+      max_lo: 0
+
+    - contains: ["advance_latest_ms"]
+      min_hi: 0
+      max_hi: 0
+
+    - contains: ["delay_earliest_ms"]
+      min_lo: 0
+      max_lo: 0
+
+    - contains: ["camera_static_interval"]
+      min_lo: 0
+      max_lo: 0
+      min_hi: 0
+      max_hi: 0
+
+    - contains: ["joint_motion_interval"]
+      min_lo: 0.1
+      max_lo: 0.1
+      min_hi: 10000
+      max_hi: 10000
+
+    - contains: ["color>].<rawData>.<fps>"]
+      min_lo: 25
+      max_lo: 25
+      min_hi: 35
+      max_hi: 35
+
+    - contains: ["depth>].<rawData>.<fps>"]
+      min_lo: 25
+      max_lo: 25
+      min_hi: 35
+      max_hi: 35
+
+    - contains: [".<max_interval_ms>"]
+      min_lo: 0
+      max_lo: 0
+
+    - contains: [".<max_interval_frames>"]
+      min_lo: 0
+      max_lo: 0
+
+    - models: ["GR2"]
+      contains: [".<loss_pp>"]
+      min_lo: 0
+      max_lo: 0
+      min_hi: 2.5
+      max_hi: 2.5
+
+    - models: ["GR2"]
+      contains: [".<rawData>.<fps>", "/cameras"]
+      min_lo: 22
+      max_lo: 22
+      min_hi: 35
+      max_hi: 35
+
+  field_rule_case_insensitive: true
+  field_rule_model_case_insensitive: true
+  apply_all_matching_rules: true
+
+
+# ==============================================================================
+# Step: test_range（负责：区间命中检测，写回 ranges.csv 并输出统计）
+# ==============================================================================
+test_range:
+  output_ranges_csv: null
+  treat_nan_as_fail: true
+  fields_mode: "range_only"
+
+  missing_value_col_is_fail: true
+  missing_range_is_fail: false
+
+  show_top_fields: true
+  top_n_fields: 5
+
+  show_fail_details: true
+  max_fail_details: 1
+
+
+# ==============================================================================
+# Step: pack_csv（负责：把 ranges.csv 转成 ranges.txt）
+# ==============================================================================
+pack_csv:
+  output_suffix: ".txt"
+
+
+# ==============================================================================
+# Step: build_sql（负责：把 ranges.txt 生成 update_rule_config.sql）
+# ==============================================================================
+build_sql:
+  sql_dirname: "sql_output"
+  sql_filename: "update_rule_config.sql"
+  csv_output_dirname: "csv_output"
+  fail_if_missing: true
+
+
+# ==============================================================================
+# Step: update_rule_api（负责：调用接口更新规则）
+# ==============================================================================
+update_rule_api:
+  # 当前使用哪个预设（dev 或 prod）
+  current_preset: "dev"
+
+  put_path: "/data-collector/rule/update"
+
+  # header 名：按你接口要求是 accesstoken
+  # 注意：你要求必须写在配置文件中（因为 2 小时更新一次）
+  access_token: "PASTE_YOUR_ACCESS_TOKEN_HERE"
+
+  dry_run: false
+  verify_tls: true
+  timeout_sec: 30
+
+  csv_output_dirname: "csv_output"
+  fail_if_id_missing: true

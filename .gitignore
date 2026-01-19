@@ -1,0 +1,16 @@
+obs_download
+csv_output
+generated_obsutil_cp.sh
+*.pyc
+log
+csv_output_old
+log_old
+check_metadata
+check_metadata_old
+collect
+update_rule_config.sql
+sql_output
+run_collect.csv
+.venv
+temp.json
+config.local.yaml
