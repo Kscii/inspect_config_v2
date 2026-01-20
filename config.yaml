@@ -57,6 +57,25 @@ global:
   continue_on_error: false
 
 
+  rule_id_to_model_presets:
+    dev:
+      175: "A2"
+      176: "A2D"
+      177: "DWHEEL-TACTILE"
+      178: "FRANKA"
+      179: "GR2"
+      180: "UR"
+      182: "COBOTMAGICV2.0"
+      183: "KUAVO_4PRO_GRIPPER"
+      187: "S1"
+      188: "PIKA"
+      189: "R1"
+      190: "QINGLOONGV2.5"
+      191: "QINGLOONGV2.5-TACTILE"
+      194: "BUTLERV3"
+    prod:
+
+
 # ==============================================================================
 # Step: download（负责：下载/搬运/合并/分组；并自动发现构型）
 # ==============================================================================
@@ -160,7 +179,6 @@ selectors:
     - "jitter_std_frames"
     - "max_interval_ms"
     - "max_interval_frames"
-    - "loss_pp"
 
   # -------------------------
   # 规则 1：新白名单（基于 selector 字符串本身）
@@ -173,6 +191,7 @@ selectors:
     - ["camera_static_interval", ".<total_second_sum>"]  # camera_static_interval
     - ["joint_motion_interval", ".<total_second_sum>"]   # joint_static_interval
     - ["[<ruleCode>=<metadata_raw>]", "<rawDataMetric>"] # metadata_raw
+    - [".<loss_pp>", ".[<loss_num>=<total>]"]  # frame_align
 
   # 新白名单匹配模式：
   # - both     : 所有 seg 都出现在 selector 中（不要求顺序/相邻）
@@ -356,6 +375,20 @@ find_range:
       max_lo: 0
       min_hi: 5
       max_hi: 5
+
+    - models: ["QINGLOONGV2.5"]
+      contains: ["color>].<rawData>.<fps>"]
+      min_lo: 50
+      max_lo: 50
+      min_hi: 70
+      max_hi: 70
+
+    - models: ["QINGLOONGV2.5"]
+      contains: ["depth>].<rawData>.<fps>"]
+      min_lo: 50
+      max_lo: 50
+      min_hi: 70
+      max_hi: 70
 
   field_rule_case_insensitive: true
   field_rule_model_case_insensitive: true
