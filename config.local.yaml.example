@@ -28,29 +28,6 @@ global:
   # - true ：记录错误并继续（仅调试时可能用）
   continue_on_error: false
 
-  # 是否启用 CSV 读取模式
-  # - false: 使用 obs_prefix 单一路径下载（原模式）
-  # - true : 读取 CSV，多路径下载（taskid list 模式）
-  csv_mode: false
-
-  # CSV 文件路径（相对 repo_root 或绝对路径都可）
-  csv_path: "task_id.csv"
-
-  # CSV 中 taskid 所在列名（支持带表头的 CSV）
-  # 如果你的 CSV 没有表头，可以设为 null，并使用 csv_col_index
-  csv_col_name: "task_id"
-
-  # CSV 列索引（0-based），仅当 csv_col_name 为 null 时生效
-  csv_col_index: 0
-
-  # 是否跳过首行（仅当你没有表头但第一行是说明时用）
-  csv_skip_header: false
-
-  # 拼接方式：obs_prefix(作为 base) + taskid + "/"
-  # true: 每行视作 taskid，拼成 data-collector-svc/collect/<taskid>/
-  # false: 每行视作完整 prefix（更通用，但你现在主要用 true）
-  csv_rows_are_taskid: true
-
 
 # ==============================================================================
 # Step: download（负责：下载/搬运/合并/分组；并自动发现构型）
@@ -60,7 +37,7 @@ download:
   # 说明：
   # - bucket 从 global.presets.<preset>.obs_bucket 读取
   # - 你也可以把 current_preset 固定为 prod，并且只改 global.presets 中的 bucket/url
-  current_preset: "dev"
+  current_preset: "prod"
 
   # OBS 前缀（末尾带 / 不带都行）
   obs_prefix: "data-collector-svc/collect/"
@@ -84,6 +61,29 @@ download:
   # 是否只演练（不实际移动/不实际下载）
   # 说明：用于安全验证逻辑；如果 global.dry_run=true，这里也会被视为 true（后续代码实现）
   dry_run: false
+
+  # 是否启用 CSV 读取模式
+  # - false: 使用 obs_prefix 单一路径下载（原模式）
+  # - true : 读取 CSV，多路径下载（taskid list 模式）
+  csv_mode: false
+
+  # CSV 文件路径（相对 repo_root 或绝对路径都可）
+  csv_path: "task_id.csv"
+
+  # CSV 中 taskid 所在列名（支持带表头的 CSV）
+  # 如果你的 CSV 没有表头，可以设为 null，并使用 csv_col_index
+  csv_col_name: "task_id"
+
+  # CSV 列索引（0-based），仅当 csv_col_name 为 null 时生效
+  csv_col_index: 0
+
+  # 是否跳过首行（仅当你没有表头但第一行是说明时用）
+  csv_skip_header: false
+
+  # 拼接方式：obs_prefix(作为 base) + taskid + "/"
+  # true: 每行视作 taskid，拼成 data-collector-svc/collect/<taskid>/
+  # false: 每行视作完整 prefix（更通用，但你现在主要用 true）
+  csv_rows_are_taskid: true
 
 # ==============================================================================
 # Step: selectors（负责：生成 selector 列表 + 过滤规则）
