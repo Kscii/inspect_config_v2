@@ -14,3 +14,4 @@ run_collect.csv
 .venv
 temp.json
 config.local.yaml
+task_id.csv
