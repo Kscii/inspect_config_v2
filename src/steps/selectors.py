@@ -16,14 +16,51 @@ import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 @dataclass
 class SelectorsResult:
-    """selectors 产出：每个 model 的 selectors 路径"""
     model_to_selectors_txt: Dict[str, Path]
 
+def _escape_angle_value(x: Any) -> str:
+    if x is None:
+        s = "null"
+    elif isinstance(x, bool):
+        s = "true" if x else "false"
+    elif isinstance(x, (int, float)) and not isinstance(x, bool):
+        s = str(x)
+    elif isinstance(x, str):
+        s = x
+    else:
+        try:
+            s = json.dumps(x, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            s = str(x)
+    return s.replace("\\", "\\\\").replace(">", "\\>")
+
+
+def _token(name: Any) -> str:
+    return f"<{_escape_angle_value(name)}>"
+
+
+def _is_leaf(x: Any) -> bool:
+    if x is None or isinstance(x, (str, int, float, bool)):
+        return True
+    if isinstance(x, list):
+        return all(not isinstance(i, dict) for i in x)
+    return False
+
+
+def _first_key(d: dict) -> Optional[str]:
+    for k in d.keys():
+        return str(k)
+    return None
+
+
+# =============================================================================
+# step 入口
+# =============================================================================
 
 def run_step(
     repo_root: Path,
@@ -39,7 +76,7 @@ def run_step(
     csv_output_dir = repo_root / "csv_output"
     csv_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 读取配置（完全迁移）
+    # 读取配置
     angle_allowlist: List[str] = list(step_cfg.get("angle_allowlist"))
     charseq_allowlist: List[List[str]] = list(step_cfg.get("charseq_allowlist"))
     charseq_match_mode: str = str(step_cfg.get("charseq_match_mode", "both"))
@@ -76,7 +113,7 @@ def run_step(
             _log(logger, log_mode, f"[selectors] model={model} 未找到 json -> 跳过")
             continue
 
-        # 2) 生成 selectors（未过滤）
+        # 2) 生成 selectors
         raw_selectors = _generate_selectors_from_json(sample_json, logger=logger, log_mode=log_mode)
         _log(logger, log_mode, f"[selectors] model={model} raw selectors: {len(raw_selectors)} (sample={sample_json})")
 
@@ -102,7 +139,7 @@ def run_step(
 
         _log(logger, log_mode, f"[selectors] model={model} filtered selectors: {len(filtered)}")
 
-        # 4) 随机一致性检查（可选）
+        # 4) 随机一致性检查
         if enable_random_consistency_check:
             _random_consistency_check(
                 model=model,
@@ -125,86 +162,64 @@ def run_step(
     return SelectorsResult(model_to_selectors_txt=model_to_txt)
 
 
-# ----------------------------
-# selector 生成：JSON -> selector strings
-# ----------------------------
+# =============================================================================
+# selector 生成
+# =============================================================================
 
 def _generate_selectors_from_json(sample_json: Path, logger, log_mode: str) -> List[str]:
-    """
-    生成 selector 的核心逻辑（工程化版本）：
-    - dict：追加 .<key>
-    - list[dict]：尝试用“标识字段”生成 .[<k>=<v>] 形式（优先 ruleCode/name/id）
-    - 叶子节点：把路径写入 selector 列表
-    注意：这套格式与后续 collect 的解析器是配套的（同一项目内部自洽）
-    """
     try:
         data = json.loads(sample_json.read_text(encoding="utf-8-sig", errors="ignore"))
     except Exception as e:
         _log(logger, log_mode, f"[selectors] 解析 json 失败：{sample_json} err={e}")
         return []
 
-    selectors: Set[str] = set()
+    out: List[str] = []
+    dedup: Set[str] = set()
 
-    def walk(node: Any, prefix: str) -> None:
+    def walk(node: Any, selector_prefix: str) -> None:
+        if _is_leaf(node):
+            if selector_prefix and selector_prefix not in dedup:
+                dedup.add(selector_prefix)
+                out.append(selector_prefix)
+            return
+
         if isinstance(node, dict):
-            if not node:
-                selectors.add(prefix)
-                return
             for k, v in node.items():
-                walk(v, f"{prefix}.<{k}>")
-        elif isinstance(node, list):
-            if not node:
-                selectors.add(prefix)
-                return
-            # list 的策略：如果元素是 dict，尝试用标识字段压缩表达
-            for it in node:
-                if isinstance(it, dict):
-                    ident = _pick_identifier(it)
-                    if ident is None:
-                        # 没标识字段就不写过滤条件（避免 selector 爆炸），直接走“列表下的公共结构”
-                        walk(it, prefix)
-                    else:
-                        ik, iv = ident
-                        walk(it, f"{prefix}.[<{ik}>=<{iv}>]")
+                child_selector = f"{selector_prefix}.{_token(str(k))}" if selector_prefix else f".{_token(str(k))}"
+                if _is_leaf(v):
+                    if child_selector in dedup:
+                        continue
+                    dedup.add(child_selector)
+                    out.append(child_selector)
                 else:
-                    # list 中是标量，直接把 list 当叶子
-                    selectors.add(prefix)
-        else:
-            # 标量叶子
-            selectors.add(prefix)
+                    walk(v, child_selector)
+            return
 
-    walk(data, "")  # 根从空开始
-    # 规范化：去掉开头多余的点
-    norm = []
-    for s in selectors:
-        s2 = s
-        if s2.startswith("."):
-            s2 = s2[1:]
-            s2 = "." + s2  # 保持你原来的“以 . 开头”的风格
-        else:
-            s2 = "." + s2  # 强制以 . 开头
-        norm.append(s2)
+        if isinstance(node, list):
+            # 只遍历 list 里的 dict；filter key = dict 的第一个 key
+            for item in node:
+                if not isinstance(item, dict):
+                    continue
+                fk = _first_key(item)
+                if fk is None:
+                    continue
+                fv = item.get(fk)
+                filt = f".[<{_escape_angle_value(fk)}>=" f"<{_escape_angle_value(fv)}>]"
+                child_selector = f"{selector_prefix}{filt}" if selector_prefix else f"{filt}"
+                walk(item, child_selector)
+            return
 
-    return sorted(set(norm))
+    walk(data, selector_prefix="")
 
-
-def _pick_identifier(d: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-    """
-    list[dict] 的标识字段优先级：
-    ruleCode > name > id > key
-    """
-    for k in ("ruleCode", "name", "id", "key"):
-        v = d.get(k)
-        if isinstance(v, (str, int, float)) and str(v) != "":
-            return (k, str(v))
-    return None
+    return sorted(set(out))
 
 
-# ----------------------------
+# =============================================================================
 # 过滤器
-# ----------------------------
+# =============================================================================
 
 _ANGLE_RE = re.compile(r"<([^<>]+)>")
+
 
 def _apply_filters(
     selectors: List[str],
@@ -223,7 +238,6 @@ def _apply_filters(
 ) -> List[str]:
     all_set = set(selectors)
 
-    # allow 集合：由两类 allowlist 累积
     allow_set: Set[str] = set()
     if enable_angle_allow_add and angle_allowlist:
         for s in all_set:
@@ -235,13 +249,11 @@ def _apply_filters(
             if _match_charseq_allow(s, charseq_allowlist, charseq_match_mode, charseq_case_sensitive):
                 allow_set.add(s)
 
-    # 如果没有任何 allowlist，是否允许全放行
     if (not angle_allowlist) and (not charseq_allowlist):
         base_set = all_set if allow_all_if_no_allowlists else set()
     else:
         base_set = allow_set
 
-    # block 排除
     if enable_angle_block_exclude and angle_blocklist:
         base_set = {s for s in base_set if not _match_angle_allow(s, angle_blocklist, angle_block_match_mode)}
 
@@ -249,31 +261,17 @@ def _apply_filters(
 
 
 def _match_angle_allow(selector: str, allowlist: List[str], mode: str) -> bool:
-    """
-    基于 .<> 内容进行匹配
-    - exact：任意一个角括号片段 == allow
-    - contains：任意一个角括号片段包含 allow，或 selector 全串包含 allow
-    """
     angles = _ANGLE_RE.findall(selector)
     if mode == "contains":
         for a in angles:
             for w in allowlist:
                 if w in a:
                     return True
-        # 兜底：selector 全串 contains
         return any(w in selector for w in allowlist)
-
-    # 默认 exact
     return any(a == w for a in angles for w in allowlist)
 
 
 def _match_charseq_allow(selector: str, rules: List[List[str]], mode: str, case_sensitive: bool) -> bool:
-    """
-    charseq_allowlist：任意一条规则命中即可
-    - both: 所有 seg 都出现在 selector 中（不要求顺序/相邻）
-    - ordered: 按顺序出现（中间允许任意字符）
-    - adjacent: 必须出现连续拼接子串 seg1+seg2+...
-    """
     s = selector if case_sensitive else selector.lower()
 
     for segs in rules:
@@ -296,16 +294,15 @@ def _match_charseq_allow(selector: str, rules: List[List[str]], mode: str, case_
             if ok:
                 return True
         else:
-            # both
             if all(p in s for p in parts):
                 return True
 
     return False
 
 
-# ----------------------------
+# =============================================================================
 # 随机一致性检查
-# ----------------------------
+# =============================================================================
 
 def _random_consistency_check(
     model: str,
@@ -317,7 +314,6 @@ def _random_consistency_check(
     logger,
     log_mode: str,
 ) -> None:
-    
     tasks = [p for p in model_root.iterdir() if p.is_dir()]
     if not tasks:
         return
@@ -352,7 +348,4 @@ def _log(logger, log_mode: str, msg: str) -> None:
     if logger is None:
         print(msg)
         return
-    if log_mode == "debug":
-        logger.info(msg)
-    else:
-        logger.info(msg)
+    logger.info(msg)
