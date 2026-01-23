@@ -390,6 +390,20 @@ find_range:
       min_hi: 70
       max_hi: 70
 
+    - models: ["DWHEEL-TACTILE"]
+      contains: ["color>].<rawData>.<fps>"]
+      min_lo: 30
+      max_lo: 30
+      min_hi: 35
+      max_hi: 35
+
+    - models: ["DWHEEL-TACTILE"]
+      contains: ["depth>].<rawData>.<fps>"]
+      min_lo: 30
+      max_lo: 30
+      min_hi: 35
+      max_hi: 35
+
   field_rule_case_insensitive: true
   field_rule_model_case_insensitive: true
   apply_all_matching_rules: true
