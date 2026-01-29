@@ -182,6 +182,9 @@ def _merge_step_result_into_runtime(step_name: str, result: Any, runtime: Dict[s
     elif step_name == "find_range":
         runtime["model_to_ranges_csv"] = {k: Path(v) for k, v in d.get("model_to_ranges_csv", {}).items()}
 
+    elif step_name == "find_range_full":
+        runtime["model_to_ranges_full_csv"] = {k: Path(v) for k, v in d.get("model_to_ranges_full_csv", {}).items()}
+
     elif step_name == "test_range":
         # 覆盖 ranges.csv 映射（因为 test_range 可能输出到新路径）
         runtime["model_to_ranges_csv"] = {k: Path(v) for k, v in d.get("model_to_ranges_csv", {}).items()}

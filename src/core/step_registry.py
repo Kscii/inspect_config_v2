@@ -20,6 +20,7 @@ STEP_ORDER: List[str] = [
     "selectors",
     "collect",
     "find_range",
+    "find_range_full",
     "test_range",
     "pack_csv",
     "build_sql",

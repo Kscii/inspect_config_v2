@@ -4,8 +4,10 @@
 update_rule_api step
 职责：
 1) 从 config.yaml 读取 current_preset -> base_url
-2) 读取 access_token（你要求必须写在配置文件里，因每 2 小时更新一次）
-3) 逐 model 发送 PUT 请求更新规则
+2) 读取 access_token
+3) 对 base 和 full 两套分别发送 PUT 请求
+   - base: /data-collector/rule/update       配置来自 {model}_ranges.txt
+   - full: /data-collector/rule/update_full  配置来自 {model}_ranges_full.txt
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 @dataclass
 class UpdateApiResult:
     updated_models: List[str]
+    updated_models_full: List[str]
 
 
 _ONE_LINE_WS = re.compile(r"\s+")
@@ -59,13 +62,6 @@ def _full_json_one_line(resp_text: Optional[str]) -> str:
 
 
 def _parse_api_fields(resp_text: Optional[str]) -> Tuple[Optional[bool], Optional[str], Optional[Any]]:
-    """
-    解析接口标准响应：{"success": true/false, "msg": "...", "data": ...}
-    返回 (success, msg, data)
-    - success: True / False / None（无法解析或缺字段）
-    - msg: str 或 None
-    - data: 任意或 None
-    """
     if resp_text is None:
         return None, None, None
     t = resp_text.strip()
@@ -80,7 +76,6 @@ def _parse_api_fields(resp_text: Optional[str]) -> Tuple[Optional[bool], Optiona
     msg = obj.get("msg", None)
     data = obj.get("data", None)
 
-    # success 可能是字符串
     if isinstance(success, str):
         ss = success.strip().lower()
         if ss == "true":
@@ -138,6 +133,8 @@ def run_step(
     logger = runtime.get("logger")
     log_mode = runtime.get("log_mode", global_cfg.get("log_mode", "normal"))
 
+    enable_full: bool = bool(step_cfg.get("enable_full", True))
+
     models: List[str] = runtime["models"]
 
     presets = global_cfg["presets"]
@@ -148,6 +145,8 @@ def run_step(
     model_to_rule_id = _build_model_to_id_map(global_cfg, current_preset)
 
     put_path: str = str(step_cfg.get("put_path", "/data-collector/rule/update"))
+    put_path_full: str = str(step_cfg.get("put_path_full", "/data-collector/rule/update_full"))
+
     access_token: str = str(step_cfg.get("access_token", "")).strip()
 
     dry_run: bool = bool(step_cfg.get("dry_run", False)) or bool(
@@ -162,30 +161,94 @@ def run_step(
     fail_if_id_missing: bool = bool(step_cfg.get("fail_if_id_missing", True))
     fail_if_txt_missing: bool = bool(step_cfg.get("fail_if_txt_missing", fail_if_id_missing))
 
-    # 可选：data=false 是否也当失败（默认 False：不改变你当前“只看 success”的语义）
-    fail_if_data_false: bool = bool(step_cfg.get("fail_if_data_false", False))
-
     if not access_token:
         raise ValueError("[update_rule_api] access_token 为空（你要求写在配置文件中）")
 
-    url = f"{base_url}{put_path}"
+    url_base = f"{base_url}{put_path}"
+    url_full = f"{base_url}{put_path_full}"
 
+    updated_base: List[str] = []
+    updated_full: List[str] = []
+
+    # 先 base
+    updated_base = _run_one_update(
+        variant="base",
+        url=url_base,
+        repo_root=repo_root,
+        logger=logger,
+        log_mode=log_mode,
+        models=models,
+        model_to_rule_id=model_to_rule_id,
+        access_token=access_token,
+        dry_run=dry_run,
+        verify_tls=verify_tls,
+        timeout_sec=timeout_sec,
+        csv_output_dirname=csv_output_dirname,
+        txt_name_tpl="{model}_ranges.txt",
+        fail_if_id_missing=fail_if_id_missing,
+        fail_if_txt_missing=fail_if_txt_missing,
+    )
+
+    # 再 full（S1：任一失败即终止）
+    if enable_full:
+        updated_full = _run_one_update(
+            variant="full",
+            url=url_full,
+            repo_root=repo_root,
+            logger=logger,
+            log_mode=log_mode,
+            models=models,
+            model_to_rule_id=model_to_rule_id,
+            access_token=access_token,
+            dry_run=dry_run,
+            verify_tls=verify_tls,
+            timeout_sec=timeout_sec,
+            csv_output_dirname=csv_output_dirname,
+            txt_name_tpl="{model}_ranges_full.txt",
+            fail_if_id_missing=fail_if_id_missing,
+            fail_if_txt_missing=fail_if_txt_missing,
+        )
+
+    return UpdateApiResult(updated_models=updated_base, updated_models_full=updated_full)
+
+
+def _run_one_update(
+    variant: str,
+    url: str,
+    repo_root: Path,
+    logger,
+    log_mode: str,
+    models: List[str],
+    model_to_rule_id: Dict[str, int],
+    access_token: str,
+    dry_run: bool,
+    verify_tls: bool,
+    timeout_sec: int,
+    csv_output_dirname: str,
+    txt_name_tpl: str,
+    fail_if_id_missing: bool,
+    fail_if_txt_missing: bool,
+) -> List[str]:
     updated: List[str] = []
+
+    headers = {
+        "Content-Type": "application/json",
+        "accesstoken": access_token,
+    }
 
     for model in models:
         rule_id = model_to_rule_id.get(model)
 
         if rule_id is None:
-            msg = f"[update_rule_api] model={model} 缺少 rule_id 映射（preset={current_preset}）"
+            msg = f"[update_rule_api:{variant}] model={model} 缺少 rule_id 映射（preset map）"
             if fail_if_id_missing:
                 raise KeyError(msg)
             _log(logger, log_mode, msg)
             continue
 
-        # 固定产物路径：csv_output/<model>/<model>_ranges.txt
-        txt_path = repo_root / csv_output_dirname / model / f"{model}_ranges.txt"
+        txt_path = repo_root / csv_output_dirname / model / txt_name_tpl.format(model=model)
         if not txt_path.exists():
-            msg = f"[update_rule_api] model={model} 缺少 ranges.txt: {txt_path}"
+            msg = f"[update_rule_api:{variant}] model={model} 缺少 ranges.txt: {txt_path}"
             if fail_if_txt_missing:
                 raise FileNotFoundError(msg)
             _log(logger, log_mode, msg)
@@ -193,21 +256,14 @@ def run_step(
 
         # 注意：pack_csv_txt 输出是 literal 单字符串（包含 \\n），这里必须原样作为 config 发送
         config_text = txt_path.read_text(encoding="utf-8", errors="strict")
-
         body_obj = {"id": int(rule_id), "config": config_text}
         body_bytes = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
-
-        headers = {
-            "Content-Type": "application/json",
-            # 按你接口要求：header 名叫 accesstoken（不要打印 token）
-            "accesstoken": access_token,
-        }
 
         if dry_run:
             _log(
                 logger,
                 log_mode,
-                f"[update_rule_api] DRY_RUN PUT {url} model={model} id={rule_id} bytes={len(body_bytes)}",
+                f"[update_rule_api:{variant}] DRY_RUN PUT {url} model={model} id={rule_id} bytes={len(body_bytes)}",
             )
             updated.append(model)
             continue
@@ -217,31 +273,25 @@ def run_step(
         )
 
         resp_one_line = _full_json_one_line(resp_text)
-        success, msg, data = _parse_api_fields(resp_text)
+        success, msg, _data = _parse_api_fields(resp_text)
 
         # 业务判定：success=false 直接报错（即使 HTTP=200），报错内容就是 msg
         if success is False:
-            raise RuntimeError(str(msg) if msg else "success=false")
+            raise RuntimeError(f"[update_rule_api:{variant}] model={model} id={rule_id} success=false msg={msg}")
 
-        # 可选：data=false 也当失败（很多接口用 data 表示是否真正生效）
-        if fail_if_data_false and isinstance(data, bool) and data is False:
-            # 仍然按你口径：报错内容用 msg（若没有 msg 就给一个兜底）
-            raise RuntimeError(str(msg) if msg else "data=false")
-
-        # HTTP 判定：非 2xx 报错（并打印完整 resp）
         if 200 <= resp_code < 300:
             _log(
                 logger,
                 log_mode,
-                f"[update_rule_api] OK model={model} id={rule_id} code={resp_code} resp={resp_one_line}",
+                f"[update_rule_api:{variant}] OK model={model} id={rule_id} code={resp_code} resp={resp_one_line}",
             )
             updated.append(model)
         else:
             raise RuntimeError(
-                f"[update_rule_api] FAILED model={model} id={rule_id} code={resp_code} resp={resp_one_line}"
+                f"[update_rule_api:{variant}] FAILED model={model} id={rule_id} code={resp_code} resp={resp_one_line}"
             )
 
-    return UpdateApiResult(updated_models=updated)
+    return updated
 
 
 def _http_put(
@@ -259,7 +309,7 @@ def _http_put(
     """
     req = urllib.request.Request(url=url, data=data, headers=headers, method="PUT")
 
-    # NOTE: verify_tls 的完整关闭一般需要 SSLContext，这里保持最小依赖不实现。
+    # NOTE: verify_tls=False 的完整关闭需要 SSLContext，这里保持最小依赖不实现。
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             code = int(resp.status)
