@@ -77,7 +77,7 @@ def run_step(
             fallback=repo_root / "csv_output" / model / f"{model}_ranges.csv",
         )
 
-        base_prefix = _format_prefix(obs_prefix_base_tpl, model=model)
+        base_prefix = _format_prefix(obs_prefix_base_tpl, model=model, time_tag=time_tag)
         base_dst = f"obs://{bucket}/{base_prefix}{time_tag}_range_base.csv"
 
         _ensure_obs_dir(
@@ -115,8 +115,8 @@ def run_step(
                 fallback=repo_root / "csv_output" / model / f"{model}_ranges_full.csv",
             )
 
-            full_prefix = _format_prefix(obs_prefix_full_tpl, model=model)
-            full_dst = f"obs://{bucket}/{full_prefix}{time_tag}_range_full.csv"
+            full_prefix = _format_prefix(obs_prefix_full_tpl, model=model, time_tag=time_tag)
+            full_dst = f"obs://{bucket}/{full_prefix}range_full.csv"
 
             _ensure_obs_dir(
                 obsutil_exe=obsutil_exe,
@@ -156,8 +156,8 @@ def run_step(
 # helpers
 # -------------------------
 
-def _format_prefix(tpl: str, model: str) -> str:
-    s = (tpl or "").replace("{model}", model)
+def _format_prefix(tpl: str, model: str, time_tag: str = "") -> str:
+    s = (tpl or "").replace("{model}", model).replace("{time}", time_tag)
     s = s.lstrip("/")  # obs://bucket/xxx 不要双斜杠
     return s if s.endswith("/") else (s + "/")
 
