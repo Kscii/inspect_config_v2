@@ -8,9 +8,11 @@ global:
     - selectors
     - collect
     - find_range
+    - find_range_full
     - test_range
     - pack_csv
     - build_sql
+    - update_rule_obs  
     - update_rule_api
 
   # 日志模式：
@@ -123,6 +125,10 @@ find_range:
   cover_pct: 0.95
 
 # ==============================================================================
+# Step: find_range_full
+# ==============================================================================
+
+# ==============================================================================
 # Step: test_range（负责：区间命中检测，写回 ranges.csv 并输出统计）
 # ==============================================================================
 test_range:
@@ -152,6 +158,13 @@ build_sql:
   fail_if_missing: true
 
 # ==============================================================================
+# Step: update_rule_obs（负责：把 ranges.csv 上传到 OBS 固定路径，不覆盖）
+# ==============================================================================
+update_rule_obs:
+  # dev / prod（bucket 从 global.presets.<preset>.obs_bucket 取）
+  current_preset: "dev"
+
+# ==============================================================================
 # Step: update_rule_api（负责：调用接口更新规则）
 # ==============================================================================
 update_rule_api:
@@ -159,9 +172,10 @@ update_rule_api:
   current_preset: "dev"
 
   # header 名：按你接口要求是 accesstoken
-  access_token: "eyJhbGciOiJSUzI1NiIsImtpZCI6ImRhdGEtY29sbGVjdG9yLWNlcnRzIiwidHlwIjoiSldUIn0.eyJvd25lciI6ImRhdGEtY29sbGVjdG9yIiwibmFtZSI6ImZhbmd4dWVqaWFuIiwiY3JlYXRlZFRpbWUiOiIyMDI1LTEyLTMwVDA5OjE2OjQ2KzA4OjAwIiwidXBkYXRlZFRpbWUiOiIyMDI2LTAxLTE1VDE4OjMyOjI2KzA4OjAwIiwiZGVsZXRlZFRpbWUiOiIiLCJpZCI6ImQzNzkwNWIzLWExYzEtNDdlNS05NTZjLWUzZjFkZjI0MDAwNCIsInR5cGUiOiJub3JtYWwtdXNlciIsInBhc3N3b3JkIjoiIiwicGFzc3dvcmRTYWx0IjoiIiwicGFzc3dvcmRUeXBlIjoicGxhaW4iLCJkaXNwbGF5TmFtZSI6ImZhbmd4dWVqaWFuIiwiZmlyc3ROYW1lIjoiIiwibGFzdE5hbWUiOiIiLCJhdmF0YXIiOiJodHRwczovL2Nkbi5jYXNiaW4ub3JnL2ltZy9jYXNiaW4uc3ZnIiwiYXZhdGFyVHlwZSI6IiIsInBlcm1hbmVudEF2YXRhciI6IiIsImVtYWlsIjoiIiwiZW1haWxWZXJpZmllZCI6ZmFsc2UsInBob25lIjoiMTM1MDE5Nzg2OTgiLCJjb3VudHJ5Q29kZSI6IkNOIiwicmVnaW9uIjoiIiwibG9jYXRpb24iOiIiLCJhZGRyZXNzIjpbXSwiYWZmaWxpYXRpb24iOiIiLCJ0aXRsZSI6IiIsImlkQ2FyZFR5cGUiOiIiLCJpZENhcmQiOiIiLCJob21lcGFnZSI6IiIsImJpbyI6IiIsImxhbmd1YWdlIjoiIiwiZ2VuZGVyIjoiIiwiYmlydGhkYXkiOiIiLCJlZHVjYXRpb24iOiIiLCJzY29yZSI6MCwia2FybWEiOjAsInJhbmtpbmciOjEyNywiaXNEZWZhdWx0QXZhdGFyIjpmYWxzZSwiaXNPbmxpbmUiOmZhbHNlLCJpc0FkbWluIjpmYWxzZSwiaXNGb3JiaWRkZW4iOmZhbHNlLCJpc0RlbGV0ZWQiOmZhbHNlLCJzaWdudXBBcHBsaWNhdGlvbiI6ImRhdGEtY29sbGVjdG9yLWFwcGxpY2F0aW9uIiwiaGFzaCI6IiIsInByZUhhc2giOiIiLCJhY2Nlc3NLZXkiOiIiLCJhY2Nlc3NTZWNyZXQiOiIiLCJnaXRodWIiOiIiLCJnb29nbGUiOiIiLCJxcSI6IiIsIndlY2hhdCI6IiIsImZhY2Vib29rIjoiIiwiZGluZ3RhbGsiOiIiLCJ3ZWlibyI6IiIsImdpdGVlIjoiIiwibGlua2VkaW4iOiIiLCJ3ZWNvbSI6IiIsImxhcmsiOiIiLCJnaXRsYWIiOiIiLCJjcmVhdGVkSXAiOiIiLCJsYXN0U2lnbmluVGltZSI6IiIsImxhc3RTaWduaW5JcCI6IiIsInByZWZlcnJlZE1mYVR5cGUiOiIiLCJyZWNvdmVyeUNvZGVzIjpudWxsLCJ0b3RwU2VjcmV0IjoiIiwibWZhUGhvbmVFbmFibGVkIjpmYWxzZSwibWZhRW1haWxFbmFibGVkIjpmYWxzZSwibGRhcCI6IiIsInByb3BlcnRpZXMiOnt9LCJyb2xlcyI6W10sInBlcm1pc3Npb25zIjpbXSwiZ3JvdXBzIjpbXSwibGFzdFNpZ25pbldyb25nVGltZSI6IiIsInNpZ25pbldyb25nVGltZXMiOjAsIm1hbmFnZWRBY2NvdW50cyI6bnVsbCwidG9rZW5UeXBlIjoiYWNjZXNzLXRva2VuIiwidGFnIjoiIiwic2NvcGUiOiJhbGwiLCJhenAiOiI5NTI1OWJlNjBkMTk2MmFkN2Q1MSIsImlzcyI6Imh0dHBzOi8vc2luZ2xlLXNpZ24tb24tc2VydmljZS5kYXRhLWFwcHMuc3ZjLmNsdXN0ZXIubG9jYWwiLCJzdWIiOiJkMzc5MDViMy1hMWMxLTQ3ZTUtOTU2Yy1lM2YxZGYyNDAwMDQiLCJhdWQiOlsiOTUyNTliZTYwZDE5NjJhZDdkNTEiXSwiZXhwIjoxNzY4NTU5MjgxLCJuYmYiOjE3Njg1NDQ4ODEsImlhdCI6MTc2ODU0NDg4MSwianRpIjoiYWRtaW4vYjhiNzNjYzYtNmE2NS00ZDdlLTlkMTktMGU2Y2RkZTU1YTI3In0.TQbZcJHtalpHlO-sLFj8i2xChBEkMLaThJr2V0yzQxSgN0HtRY0yioECuUz90NTd9s1CtJ7kp1-PJx4y8QanXfc4SVenTAMZyYkKddGrJ9ZXstHs5WOIp2D0Di9GoE9w5YYdCbf9LMWUlHia3wWUrWIvyM3KmMrCVCCXXIkkIuOvBKdtmoWasLiLSzcK-ZNuFAZ5LyYnqNhnLuYcmfMwKyFJ3o4QYknsYk_6H4SiYMawwPhI0iX4mJl3wz90ts37blLDDtXdgVqPMlvC_rxXLlEC82md6PCC2IwX7XC-YaYd3hVcF8QZWuRw0hObTzcBQZaYZmnSd37GdlKkaqQ47QCHw54YorVdEftau08ICnYacDz0gsy9OsrlfLddsp6UmT4Fq40O9gIPF3ZMHJk0i3PnIXFPWenxCI7OBUSvHzVRG-3dYrxZuUZ1SC_6lcM6Bn9hWdH5hI2UrliQMyMGiyOPY3k9jf-Rl5Y5jq8eI-jmktcmyOieLBlyEbbAUZxK2spkDb-0-BoApL7Q8-y525mkuasGdHjIBJE4HSYQTMHOGfUVxbiA0rZBQegYlOHgmqs72hzeQI0HqWyxMRV7zTkwuiqRYnsBukOQ12CqzN0DGNdolHTtcO6SgBRsSmVeVfJl8BYo2NNPvjGIbC9-xDNv_d_4YQzfP8KG_OfzlME"
-
+  access_token: "eyJhbGciOiJSUzI1NiIsImtpZCI6ImRhdGEtY29sbGVjdG9yLWNlcnRzIiwidHlwIjoiSldUIn0.eyJvd25lciI6ImRhdGEtY29sbGVjdG9yIiwibmFtZSI6ImZhbmd4dWVqaWFuIiwiY3JlYXRlZFRpbWUiOiIyMDI1LTEyLTMwVDA5OjE2OjQ2KzA4OjAwIiwidXBkYXRlZFRpbWUiOiIyMDI2LTAxLTE1VDE4OjMyOjI2KzA4OjAwIiwiZGVsZXRlZFRpbWUiOiIiLCJpZCI6ImQzNzkwNWIzLWExYzEtNDdlNS05NTZjLWUzZjFkZjI0MDAwNCIsInR5cGUiOiJub3JtYWwtdXNlciIsInBhc3N3b3JkIjoiIiwicGFzc3dvcmRTYWx0IjoiIiwicGFzc3dvcmRUeXBlIjoicGxhaW4iLCJkaXNwbGF5TmFtZSI6ImZhbmd4dWVqaWFuIiwiZmlyc3ROYW1lIjoiIiwibGFzdE5hbWUiOiIiLCJhdmF0YXIiOiJodHRwczovL2Nkbi5jYXNiaW4ub3JnL2ltZy9jYXNiaW4uc3ZnIiwiYXZhdGFyVHlwZSI6IiIsInBlcm1hbmVudEF2YXRhciI6IiIsImVtYWlsIjoiIiwiZW1haWxWZXJpZmllZCI6ZmFsc2UsInBob25lIjoiMTM1MDE5Nzg2OTgiLCJjb3VudHJ5Q29kZSI6IkNOIiwicmVnaW9uIjoiIiwibG9jYXRpb24iOiIiLCJhZGRyZXNzIjpbXSwiYWZmaWxpYXRpb24iOiIiLCJ0aXRsZSI6IiIsImlkQ2FyZFR5cGUiOiIiLCJpZENhcmQiOiIiLCJob21lcGFnZSI6IiIsImJpbyI6IiIsImxhbmd1YWdlIjoiIiwiZ2VuZGVyIjoiIiwiYmlydGhkYXkiOiIiLCJlZHVjYXRpb24iOiIiLCJzY29yZSI6MCwia2FybWEiOjAsInJhbmtpbmciOjEyNywiaXNEZWZhdWx0QXZhdGFyIjpmYWxzZSwiaXNPbmxpbmUiOmZhbHNlLCJpc0FkbWluIjpmYWxzZSwiaXNGb3JiaWRkZW4iOmZhbHNlLCJpc0RlbGV0ZWQiOmZhbHNlLCJzaWdudXBBcHBsaWNhdGlvbiI6ImRhdGEtY29sbGVjdG9yLWFwcGxpY2F0aW9uIiwiaGFzaCI6IiIsInByZUhhc2giOiIiLCJhY2Nlc3NLZXkiOiIiLCJhY2Nlc3NTZWNyZXQiOiIiLCJnaXRodWIiOiIiLCJnb29nbGUiOiIiLCJxcSI6IiIsIndlY2hhdCI6IiIsImZhY2Vib29rIjoiIiwiZGluZ3RhbGsiOiIiLCJ3ZWlibyI6IiIsImdpdGVlIjoiIiwibGlua2VkaW4iOiIiLCJ3ZWNvbSI6IiIsImxhcmsiOiIiLCJnaXRsYWIiOiIiLCJjcmVhdGVkSXAiOiIiLCJsYXN0U2lnbmluVGltZSI6IiIsImxhc3RTaWduaW5JcCI6IiIsInByZWZlcnJlZE1mYVR5cGUiOiIiLCJyZWNvdmVyeUNvZGVzIjpudWxsLCJ0b3RwU2VjcmV0IjoiIiwibWZhUGhvbmVFbmFibGVkIjpmYWxzZSwibWZhRW1haWxFbmFibGVkIjpmYWxzZSwibGRhcCI6IiIsInByb3BlcnRpZXMiOnt9LCJyb2xlcyI6W10sInBlcm1pc3Npb25zIjpbXSwiZ3JvdXBzIjpbXSwibGFzdFNpZ25pbldyb25nVGltZSI6IiIsInNpZ25pbldyb25nVGltZXMiOjAsIm1hbmFnZWRBY2NvdW50cyI6bnVsbCwidG9rZW5UeXBlIjoiYWNjZXNzLXRva2VuIiwidGFnIjoiIiwic2NvcGUiOiJhbGwiLCJhenAiOiI5NTI1OWJlNjBkMTk2MmFkN2Q1MSIsImlzcyI6Imh0dHBzOi8vc2luZ2xlLXNpZ24tb24tc2VydmljZS5kYXRhLWFwcHMuc3ZjLmNsdXN0ZXIubG9jYWwiLCJzdWIiOiJkMzc5MDViMy1hMWMxLTQ3ZTUtOTU2Yy1lM2YxZGYyNDAwMDQiLCJhdWQiOlsiOTUyNTliZTYwZDE5NjJhZDdkNTEiXSwiZXhwIjoxNzY5NjkyOTI1LCJuYmYiOjE3Njk2Nzg1MjUsImlhdCI6MTc2OTY3ODUyNSwianRpIjoiYWRtaW4vYjhiNDllNzctNjI2NS00NTFjLThmNDAtZTk1MDExOWJjMTEzIn0.rHil_iyTVCBV2Z8OHLYK-NL39GpUo0eic9PBwUK0DJKHA9i46c6NuXu6DsBok6DOhg5PTLD1xB-KGz7CuJ4oBC_smtcnGCRsdxBLnTat0a_SmyCttlHySPu2zAOL4QmkZWetO1f1rJ4-acz-JAEKtdekYOh6cXCc5GYSaXSDQlrPeQyU6-WX14mV1-WHMCSxvxjU38-DzBHKpITSDyS4nEOijeRVmLdhgqiPIOpnycyAZzeQTcYgEBUnLSJDRSJ12jc3stiFDk6h57C6_itUtkbrrkgZJNyBXftUv9H-BNrHgg2NWZih0r2jd9R2n65RbWohpPO2bYykf1jY60ChUhUyKIyUJUPtzmj0VvNLY--hQA-DUkBhWCrfPyAX8EfK7twEfpZMTS2ynDpk9gqdDCfWWDqSyiosfL--zktT4-aX_Jw4LCCGonPko4M1RR1c_rxTD_xCZax0SNdVAbTQMT266eMMa9dBe1oHCxnEHo5QhF9IcTy4KZb8NRcuflLo5wk3z3pqovxixPF-TyYIuIg0uI3lxqJqi2llNA9m0ANsiJNqCyk2ktgj60J9NKqsiOcij6rDrpwiCvh46xrP3LMgqXBr0KF0A40U9TXFxWKLzj968AQo0a58hNKef2-KNM2nhw1KjWGYx-_kdFgUlb8mpj4i4fna09i4zi-oe1c"
   dry_run: false
   verify_tls: true
   timeout_sec: 30
+
+
 
