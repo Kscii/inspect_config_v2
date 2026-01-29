@@ -25,6 +25,7 @@ global:
     - test_range
     - pack_csv
     - build_sql
+    - update_rule_obs  
     - update_rule_api
 
   presets:
@@ -412,12 +413,6 @@ find_range:
 
 # ==============================================================================
 # Step: find_range_full
-# - 从 <model>.csv 获取字段全集（除 file）
-# - 非数值字段必须由 force_non_numeric_field_rules 覆盖 => 输出 true,true
-# - 其余字段视为数值字段：必须且仅能命中 1 条 field_range_rules（contains + range:[lo,hi]）
-# - 命中>=2：冲突 -> 终止
-# - 命中0：缺失 -> 终止
-# - 禁止 rules 里出现 models/model 或旧字段（min_lo/max_lo/...）
 # ==============================================================================
 find_range_full:
   non_numeric_mark: "true"
@@ -429,8 +424,6 @@ find_range_full:
     - contains: [".<total_second_sum>"]
       range: [0, 0]
     
-
-
   field_rule_case_insensitive: true
 
 # ==============================================================================
@@ -475,6 +468,35 @@ build_sql:
 
 
 # ==============================================================================
+# Step: update_rule_obs（负责：把 ranges.csv 上传到 OBS 固定路径，不覆盖）
+# ==============================================================================
+update_rule_obs:
+  # dev / prod（bucket 从 global.presets.<preset>.obs_bucket 取）
+  current_preset: "dev"
+
+  # obsutil 可执行文件：null 表示用 PATH 中的 obsutil
+  obsutil_exe: null
+
+  # obsutil 并行参数（可选）
+  parallel: 8
+  jobs: 8
+
+  # 是否强制覆盖 obsutil cp
+  force: false
+
+  # 是否演练
+  dry_run: false
+  enable_full: true
+
+  # 目的前缀（支持 {model} 占位符）
+  obs_prefix_base: "data-collector-svc/range/{model}/base/"
+  obs_prefix_full: "data-collector-svc/range/{model}/full/"
+
+  # 文件名时间戳格式：YYYYMMDD_HHMMSS（不带时区）
+  time_format: "%Y%m%d_%H%M%S"
+
+
+# ==============================================================================
 # Step: update_rule_api（负责：调用接口更新规则）
 # ==============================================================================
 update_rule_api:
@@ -482,10 +504,8 @@ update_rule_api:
   current_preset: "dev"
 
   put_path: "/data-collector/rule/update"
-  put_path_full: "/data-collector/rule/update_full"
 
   # header 名：按你接口要求是 accesstoken
-  # 注意：你要求必须写在配置文件中（因为 2 小时更新一次）
   access_token: "PASTE_YOUR_ACCESS_TOKEN_HERE"
 
   dry_run: false
@@ -496,3 +516,5 @@ update_rule_api:
   fail_if_id_missing: true
   fail_if_txt_missing: true
   enable_full: true
+
+

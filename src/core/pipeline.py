@@ -195,6 +195,12 @@ def _merge_step_result_into_runtime(step_name: str, result: Any, runtime: Dict[s
     elif step_name == "build_sql":
         runtime["sql_path"] = Path(d.get("sql_path"))
 
+    elif step_name == "update_rule_obs":
+        runtime["uploaded_models_obs"] = list(d.get("uploaded_models", []))
+        runtime["uploaded_time_tag"] = str(d.get("time_tag", ""))
+        runtime["model_to_uploaded_base"] = dict(d.get("model_to_uploaded_base", {}) or {})
+        runtime["model_to_uploaded_full"] = dict(d.get("model_to_uploaded_full", {}) or {})
+
     elif step_name == "update_rule_api":
         runtime["updated_models"] = list(d.get("updated_models", []))
 

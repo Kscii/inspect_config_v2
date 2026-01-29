@@ -24,6 +24,7 @@ STEP_ORDER: List[str] = [
     "test_range",
     "pack_csv",
     "build_sql",
+    "update_rule_obs",
     "update_rule_api",
 ]
 
