@@ -5,9 +5,10 @@ update_rule_api step
 职责：
 1) 从 config.yaml 读取 current_preset -> base_url
 2) 读取 access_token
-3) 对 base 和 full 两套分别发送 PUT 请求
-   - base: /data-collector/rule/update       配置来自 {model}_ranges.txt
-   - full: /data-collector/rule/update_full  配置来自 {model}_ranges_full.txt
+3) 对 base 和 full 两套分别发送 PUT 请求（同一路径，不同 body 字段）
+   - endpoint: /data-collector/rule/update
+   - base: body = {"id": <rule_id>, "config": "<literal txt>"}          txt来自 {model}_ranges.txt
+   - full: body = {"id": <rule_id>, "configFull": "<literal txt>"}      txt来自 {model}_ranges_full.txt
 """
 
 from __future__ import annotations
@@ -62,6 +63,11 @@ def _full_json_one_line(resp_text: Optional[str]) -> str:
 
 
 def _parse_api_fields(resp_text: Optional[str]) -> Tuple[Optional[bool], Optional[str], Optional[Any]]:
+    """
+    尝试解析后端通用返回：
+      {"success": true/false, "msg": "...", "data": ...}
+    解析失败返回 (None, None, None)
+    """
     if resp_text is None:
         return None, None, None
     t = resp_text.strip()
@@ -116,9 +122,7 @@ def _build_model_to_id_map(global_cfg: Dict[str, Any], preset: str) -> Dict[str,
         try:
             rid_i = int(rid)
         except Exception:
-            # rid 不是 int：跳过（配置错误）
             continue
-        # 注意：如果同一个 model 出现多次，后写会覆盖前写（建议你在 YAML 保证唯一性）
         model_to_id[n] = rid_i
 
     return model_to_id
@@ -134,7 +138,6 @@ def run_step(
     log_mode = runtime.get("log_mode", global_cfg.get("log_mode", "normal"))
 
     enable_full: bool = bool(step_cfg.get("enable_full", True))
-
     models: List[str] = runtime["models"]
 
     presets = global_cfg["presets"]
@@ -145,8 +148,6 @@ def run_step(
     model_to_rule_id = _build_model_to_id_map(global_cfg, current_preset)
 
     put_path: str = str(step_cfg.get("put_path", "/data-collector/rule/update"))
-    put_path_full: str = str(step_cfg.get("put_path_full", "/data-collector/rule/update_full"))
-
     access_token: str = str(step_cfg.get("access_token", "")).strip()
 
     dry_run: bool = bool(step_cfg.get("dry_run", False)) or bool(
@@ -157,23 +158,18 @@ def run_step(
 
     csv_output_dirname: str = str(step_cfg.get("csv_output_dirname", "csv_output"))
 
-    # 缺少 rule_id / 缺少 txt 的失败策略
     fail_if_id_missing: bool = bool(step_cfg.get("fail_if_id_missing", True))
     fail_if_txt_missing: bool = bool(step_cfg.get("fail_if_txt_missing", fail_if_id_missing))
 
     if not access_token:
         raise ValueError("[update_rule_api] access_token 为空（你要求写在配置文件中）")
 
-    url_base = f"{base_url}{put_path}"
-    url_full = f"{base_url}{put_path_full}"
+    url = f"{base_url}{put_path}"
 
-    updated_base: List[str] = []
-    updated_full: List[str] = []
-
-    # 先 base
+    # base
     updated_base = _run_one_update(
         variant="base",
-        url=url_base,
+        url=url,
         repo_root=repo_root,
         logger=logger,
         log_mode=log_mode,
@@ -185,15 +181,17 @@ def run_step(
         timeout_sec=timeout_sec,
         csv_output_dirname=csv_output_dirname,
         txt_name_tpl="{model}_ranges.txt",
+        payload_config_key="config",
         fail_if_id_missing=fail_if_id_missing,
         fail_if_txt_missing=fail_if_txt_missing,
     )
 
-    # 再 full（S1：任一失败即终止）
+    # full（S1：任一失败即终止）
+    updated_full: List[str] = []
     if enable_full:
         updated_full = _run_one_update(
             variant="full",
-            url=url_full,
+            url=url,
             repo_root=repo_root,
             logger=logger,
             log_mode=log_mode,
@@ -205,6 +203,7 @@ def run_step(
             timeout_sec=timeout_sec,
             csv_output_dirname=csv_output_dirname,
             txt_name_tpl="{model}_ranges_full.txt",
+            payload_config_key="configFull",
             fail_if_id_missing=fail_if_id_missing,
             fail_if_txt_missing=fail_if_txt_missing,
         )
@@ -226,6 +225,7 @@ def _run_one_update(
     timeout_sec: int,
     csv_output_dirname: str,
     txt_name_tpl: str,
+    payload_config_key: str,
     fail_if_id_missing: bool,
     fail_if_txt_missing: bool,
 ) -> List[str]:
@@ -254,16 +254,17 @@ def _run_one_update(
             _log(logger, log_mode, msg)
             continue
 
-        # 注意：pack_csv_txt 输出是 literal 单字符串（包含 \\n），这里必须原样作为 config 发送
+        # 注意：pack_csv 输出是 literal 单字符串（可能包含 \\n），这里必须原样作为 config 发送
         config_text = txt_path.read_text(encoding="utf-8", errors="strict")
-        body_obj = {"id": int(rule_id), "config": config_text}
+
+        body_obj = {"id": int(rule_id), payload_config_key: config_text}
         body_bytes = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
 
         if dry_run:
             _log(
                 logger,
                 log_mode,
-                f"[update_rule_api:{variant}] DRY_RUN PUT {url} model={model} id={rule_id} bytes={len(body_bytes)}",
+                f"[update_rule_api:{variant}] DRY_RUN PUT {url} model={model} id={rule_id} key={payload_config_key} bytes={len(body_bytes)}",
             )
             updated.append(model)
             continue
@@ -275,7 +276,7 @@ def _run_one_update(
         resp_one_line = _full_json_one_line(resp_text)
         success, msg, _data = _parse_api_fields(resp_text)
 
-        # 业务判定：success=false 直接报错（即使 HTTP=200），报错内容就是 msg
+        # 业务判定：success=false 直接报错（即使 HTTP=200）
         if success is False:
             raise RuntimeError(f"[update_rule_api:{variant}] model={model} id={rule_id} success=false msg={msg}")
 
@@ -310,24 +311,27 @@ def _http_put(
     req = urllib.request.Request(url=url, data=data, headers=headers, method="PUT")
 
     # NOTE: verify_tls=False 的完整关闭需要 SSLContext，这里保持最小依赖不实现。
+    #       你当前 verify_tls 默认 true，生产建议保持 true。
+    _ = verify_tls  # 保持参数占位，避免未使用告警（如你有 lint）
+
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             code = int(resp.status)
             text = resp.read().decode("utf-8", errors="ignore")
             return code, text
     except urllib.error.HTTPError as e:
-        # HTTPError 也有 response body
         try:
             body = e.read().decode("utf-8", errors="ignore")
         except Exception:
             body = ""
         return int(getattr(e, "code", 0) or 0), body
     except Exception as e:
-        # 网络/连接错误：用 code=0 表示
         return 0, _one_line(str(e))
 
 
 def _log(logger, log_mode: str, msg: str) -> None:
+    # log_mode 目前不分支（保留接口，与你其他 step 对齐）
+    _ = log_mode
     if logger is None:
         print(msg)
         return
