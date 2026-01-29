@@ -21,6 +21,7 @@ global:
     - selectors
     - collect
     - find_range
+    - find_range_full
     - test_range
     - pack_csv
     - build_sql
@@ -410,6 +411,29 @@ find_range:
 
 
 # ==============================================================================
+# Step: find_range_full
+# - 从 <model>.csv 获取字段全集（除 file）
+# - 非数值字段必须由 force_non_numeric_field_rules 覆盖 => 输出 true,true
+# - 其余字段视为数值字段：必须且仅能命中 1 条 field_range_rules（contains + range:[lo,hi]）
+# - 命中>=2：冲突 -> 终止
+# - 命中0：缺失 -> 终止
+# - 禁止 rules 里出现 models/model 或旧字段（min_lo/max_lo/...）
+# ==============================================================================
+find_range_full:
+  non_numeric_mark: "true"
+
+  force_non_numeric_field_rules:
+    - contains: ["metadata_raw"]
+
+  field_range_rules:
+    - contains: [".<total_second_sum>"]
+      range: [0, 0]
+    
+
+
+  field_rule_case_insensitive: true
+
+# ==============================================================================
 # Step: test_range（负责：区间命中检测，写回 ranges.csv 并输出统计）
 # ==============================================================================
 test_range:
@@ -431,7 +455,11 @@ test_range:
 # Step: pack_csv（负责：把 ranges.csv 转成 ranges.txt）
 # ==============================================================================
 pack_csv:
+  # base:  {model}_ranges.txt
   output_suffix: ".txt"
+  # full:  {model}_ranges_full.txt  => 例：A2_ranges_full.txt
+  output_suffix_full: "_full.txt"
+  enable_full: true
 
 
 # ==============================================================================
@@ -440,8 +468,10 @@ pack_csv:
 build_sql:
   sql_dirname: "sql_output"
   sql_filename: "update_rule_config.sql"
+  sql_filename_full: "update_rule_config_full.sql"
   csv_output_dirname: "csv_output"
   fail_if_missing: true
+  enable_full: true
 
 
 # ==============================================================================
@@ -452,6 +482,7 @@ update_rule_api:
   current_preset: "dev"
 
   put_path: "/data-collector/rule/update"
+  put_path_full: "/data-collector/rule/update_full"
 
   # header 名：按你接口要求是 accesstoken
   # 注意：你要求必须写在配置文件中（因为 2 小时更新一次）
@@ -463,3 +494,5 @@ update_rule_api:
 
   csv_output_dirname: "csv_output"
   fail_if_id_missing: true
+  fail_if_txt_missing: true
+  enable_full: true
