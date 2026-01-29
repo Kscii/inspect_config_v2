@@ -190,6 +190,9 @@ selectors:
   charseq_allowlist:
     - ["frame_count", ".<fps>"]                         # frame_count
     - ["arm", "拟合评分"]                                # frame_fit
+    - ["shoulder", "拟合评分"]          # frame_fit
+    - ["elbow", "拟合评分"] 
+    - ["wrist", "拟合评分"] 
     - ["camera_static_interval", ".<total_second_sum>"]  # camera_static_interval
     - ["joint_motion_interval", ".<total_second_sum>"]   # joint_static_interval
     - ["[<ruleCode>=<metadata_raw>]", "<rawDataMetric>"] # metadata_raw
@@ -421,9 +424,57 @@ find_range_full:
     - contains: ["metadata_raw"]
 
   field_range_rules:
-    - contains: [".<total_second_sum>"]
-      range: [0, 0]
+    - contains: ["frame_align","end_diff_average_ms"]
+      range: [0, 4000]
+
+    - contains: ["frame_align","end_diff_camera_average_ms"]
+      range: [0, 60]
+
+    - contains: ["frame_align","end_diff_joint_average_ms"]
+      range: [0, 4000]
+
+    - contains: ["frame_align","start_diff_average_ms"]
+      range: [0, 4000]
+
+    - contains: ["frame_align","start_diff_camera_average_ms"]
+      range: [0, 60]
+
+    - contains: ["frame_align","start_diff_joint_average_ms"]
+      range: [0, 4000]
+
+    - contains: ["frame_align","advance_latest_ms"]
+      range: [-200, 0]
     
+    - contains: ["frame_align","delay_earliest_ms"]
+      range: [0, 4000]
+
+    - contains: ["frame_count","fps"]
+      range: [25, 35]
+
+    - contains: ["frame_count","jitter_std_frames"]
+      range: [0, 1]
+
+    - contains: ["frame_count","jitter_std_ms"]
+      range: [0, 40]
+
+    - contains: ["frame_count","loss_pp"]
+      range: [0, 20]
+
+    - contains: ["frame_count","max_interval_frames"]
+      range: [0, 20]
+
+    - contains: ["frame_count","max_interval_ms"]
+      range: [0, 600]
+
+    - contains: ["frame_fit","拟合评分"]
+      range: [70, 100]
+
+    - contains: ["camera_static_interval","total_second_sum"]
+      range: [0, 0]
+
+    - contains: ["joint_motion_interval","total_second_sum"]
+      range: [0.1, 10000]
+
   field_rule_case_insensitive: true
 
 # ==============================================================================
