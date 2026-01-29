@@ -489,8 +489,8 @@ update_rule_obs:
   enable_full: true
 
   # 目的前缀（支持 {model} 占位符）
-  obs_prefix_base: "data-collector-svc/range/{model}/base/"
-  obs_prefix_full: "data-collector-svc/range/{model}/full/"
+  obs_prefix_base: "data-collector-svc/range/{model}/base/{time}"
+  obs_prefix_full: "data-collector-svc/range/{model}/full/{time}"
 
   # 文件名时间戳格式：YYYYMMDD_HHMMSS（不带时区）
   time_format: "%Y%m%d_%H%M%S"
