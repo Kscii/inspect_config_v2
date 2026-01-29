@@ -56,6 +56,8 @@ def run_step(
     obs_prefix_base_tpl = str(step_cfg.get("obs_prefix_base", "data-collector-svc/range/{model}/base/"))
     obs_prefix_full_tpl = str(step_cfg.get("obs_prefix_full", "data-collector-svc/range/{model}/full/"))
 
+    csv_output_dirname = str(step_cfg.get("csv_output_dirname", "csv_output"))
+
     time_format = str(step_cfg.get("time_format", "%Y%m%d_%H%M%S"))
     time_tag = datetime.now().strftime(time_format)  # 按你要求：不带时区
 
@@ -107,6 +109,7 @@ def run_step(
         # -------------------------
         # full local file (optional)
         # -------------------------
+        full_prefix = None  # 初始化，避免未定义
         if enable_full:
             full_local = _resolve_local_csv(
                 repo_root=repo_root,
@@ -143,6 +146,18 @@ def run_step(
 
         uploaded.append(model)
         _log(logger, log_mode, f"[update_rule_obs] model={model} uploaded base={base_dst}" + (f" full={uploaded_full.get(model)}" if enable_full else ""))
+
+        # 保存上传路径信息到 {model}_last_path.txt
+        _save_last_path(
+            repo_root=repo_root,
+            csv_output_dirname=csv_output_dirname,
+            model=model,
+            base_prefix=base_prefix.rstrip("/"),
+            full_prefix=full_prefix.rstrip("/") if enable_full else None,
+            dry_run=dry_run,
+            logger=logger,
+            log_mode=log_mode,
+        )
 
     return UpdateRuleObsResult(
         uploaded_models=uploaded,
@@ -224,6 +239,41 @@ def _obsutil_cp_file(
             f"[update_rule_obs] obsutil cp failed({tag}): code={proc.returncode} cmd={' '.join(cmd)} "
             f"stdout={_one_line(proc.stdout)} stderr={_one_line(proc.stderr)}"
         )
+
+
+def _save_last_path(
+    repo_root: Path,
+    csv_output_dirname: str,
+    model: str,
+    base_prefix: str,
+    full_prefix: Optional[str],
+    dry_run: bool,
+    logger,
+    log_mode: str,
+) -> None:
+    """
+    保存上传路径信息到 {model}_last_path.txt
+    内容格式（两行）：
+      data-collector-svc/range/{model}/base/{time}
+      data-collector-svc/range/{model}/full/{time}
+    """
+    output_dir = repo_root / csv_output_dirname / model
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    last_path_file = output_dir / f"{model}_last_path.txt"
+    
+    lines = [base_prefix]
+    if full_prefix is not None:
+        lines.append(full_prefix)
+    
+    content = "\n".join(lines) + "\n"
+    
+    if dry_run:
+        _log(logger, log_mode, f"[update_rule_obs] DRY_RUN save_last_path: {last_path_file}")
+        return
+    
+    last_path_file.write_text(content, encoding="utf-8")
+    _log(logger, log_mode, f"[update_rule_obs] saved path info to {last_path_file}")
 
 
 def _one_line(s: Optional[str]) -> str:

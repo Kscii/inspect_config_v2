@@ -208,6 +208,23 @@ def run_step(
             fail_if_txt_missing=fail_if_txt_missing,
         )
 
+    # 新增：发送 csvPath 和 csvFullPath
+    _run_path_update(
+        url=url,
+        repo_root=repo_root,
+        logger=logger,
+        log_mode=log_mode,
+        models=models,
+        model_to_rule_id=model_to_rule_id,
+        access_token=access_token,
+        dry_run=dry_run,
+        verify_tls=verify_tls,
+        timeout_sec=timeout_sec,
+        csv_output_dirname=csv_output_dirname,
+        enable_full=enable_full,
+        fail_if_id_missing=fail_if_id_missing,
+    )
+
     return UpdateApiResult(updated_models=updated_base, updated_models_full=updated_full)
 
 
@@ -336,3 +353,112 @@ def _log(logger, log_mode: str, msg: str) -> None:
         print(msg)
         return
     logger.info(msg)
+
+
+def _read_last_path(repo_root: Path, csv_output_dirname: str, model: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    读取 {model}_last_path.txt 文件
+    返回 (base_path, full_path)，如果文件不存在或格式错误则返回 (None, None)
+    """
+    last_path_file = repo_root / csv_output_dirname / model / f"{model}_last_path.txt"
+    if not last_path_file.exists():
+        return None, None
+    
+    try:
+        content = last_path_file.read_text(encoding="utf-8").strip()
+        lines = [line.strip() for line in content.split("\n") if line.strip()]
+        
+        base_path = lines[0] if len(lines) >= 1 else None
+        full_path = lines[1] if len(lines) >= 2 else None
+        
+        return base_path, full_path
+    except Exception:
+        return None, None
+
+
+def _run_path_update(
+    url: str,
+    repo_root: Path,
+    logger,
+    log_mode: str,
+    models: List[str],
+    model_to_rule_id: Dict[str, int],
+    access_token: str,
+    dry_run: bool,
+    verify_tls: bool,
+    timeout_sec: int,
+    csv_output_dirname: str,
+    enable_full: bool,
+    fail_if_id_missing: bool,
+) -> None:
+    """
+    读取 {model}_last_path.txt 并发送两次 PUT 请求：
+    1) {"id": xxx, "csvPath": "..."}
+    2) {"id": xxx, "csvFullPath": "..."}  (仅当 enable_full=True)
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "accesstoken": access_token,
+    }
+
+    for model in models:
+        rule_id = model_to_rule_id.get(model)
+        if rule_id is None:
+            msg = f"[update_rule_api:path] model={model} 缺少 rule_id 映射"
+            if fail_if_id_missing:
+                raise KeyError(msg)
+            _log(logger, log_mode, msg)
+            continue
+
+        base_path, full_path = _read_last_path(repo_root, csv_output_dirname, model)
+        
+        if base_path is None:
+            _log(logger, log_mode, f"[update_rule_api:path] model={model} 缺少 last_path.txt，跳过 csvPath 更新")
+            continue
+
+        # 发送 csvPath
+        body_base = {"id": int(rule_id), "csvPath": base_path}
+        body_base_bytes = json.dumps(body_base, ensure_ascii=False).encode("utf-8")
+
+        if dry_run:
+            _log(logger, log_mode, f"[update_rule_api:path] DRY_RUN PUT {url} model={model} id={rule_id} csvPath={base_path}")
+        else:
+            resp_code, resp_text = _http_put(
+                url, body_base_bytes, headers=headers, timeout=timeout_sec, verify_tls=verify_tls
+            )
+            resp_one_line = _full_json_one_line(resp_text)
+            success, msg, _data = _parse_api_fields(resp_text)
+
+            if success is False:
+                raise RuntimeError(f"[update_rule_api:path] model={model} id={rule_id} csvPath update failed: success=false msg={msg}")
+
+            if 200 <= resp_code < 300:
+                _log(logger, log_mode, f"[update_rule_api:path] OK model={model} id={rule_id} csvPath={base_path} code={resp_code}")
+            else:
+                raise RuntimeError(
+                    f"[update_rule_api:path] FAILED model={model} id={rule_id} csvPath code={resp_code} resp={resp_one_line}"
+                )
+
+        # 发送 csvFullPath (仅当 enable_full=True 且 full_path 存在)
+        if enable_full and full_path is not None:
+            body_full = {"id": int(rule_id), "csvFullPath": full_path}
+            body_full_bytes = json.dumps(body_full, ensure_ascii=False).encode("utf-8")
+
+            if dry_run:
+                _log(logger, log_mode, f"[update_rule_api:path] DRY_RUN PUT {url} model={model} id={rule_id} csvFullPath={full_path}")
+            else:
+                resp_code, resp_text = _http_put(
+                    url, body_full_bytes, headers=headers, timeout=timeout_sec, verify_tls=verify_tls
+                )
+                resp_one_line = _full_json_one_line(resp_text)
+                success, msg, _data = _parse_api_fields(resp_text)
+
+                if success is False:
+                    raise RuntimeError(f"[update_rule_api:path] model={model} id={rule_id} csvFullPath update failed: success=false msg={msg}")
+
+                if 200 <= resp_code < 300:
+                    _log(logger, log_mode, f"[update_rule_api:path] OK model={model} id={rule_id} csvFullPath={full_path} code={resp_code}")
+                else:
+                    raise RuntimeError(
+                        f"[update_rule_api:path] FAILED model={model} id={rule_id} csvFullPath code={resp_code} resp={resp_one_line}"
+                    )
