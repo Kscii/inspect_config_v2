@@ -222,9 +222,21 @@ selectors:
   charseq_case_sensitive: true
 
   # -------------------------
-  # 规则 2：黑名单（基于 .<> 内容）
+  # 规则 2：黑名单（基于 contains 匹配，可指定构型）
   # -------------------------
-  angle_blocklist: []
+  angle_blocklist:
+    - models: ["PIKA"]
+      contains: ["effort"]
+
+    - models: ["PIKA"]
+      contains: ["velocity"]
+
+    # - models: ["QINGLOONGV2.5","R1","S1","UR"]
+    #   contains: ["report"]
+
+    - models: ["A2D"]
+      contains: ["waist"]
+
 
   # -------------------------
   # 执行顺序（可配置）
@@ -254,9 +266,20 @@ selectors:
   # 当两个 allowlist 都为空时，是否允许“全放行”
   allow_all_if_no_allowlists: true
 
-  # -------------------------
+  # 并集模式
+  use_union_of_all_samples: false
+
+  # 并集模式下的最小样本数过滤
+  enable_union_min_sample_filter: false
+  
+  # 全局默认阈值：字段至少在 N 个样本中出现才保留
+  union_min_sample_count: 300
+  
+  # 按构型覆盖阈值（可选）
+  # union_min_sample_count_by_model:
+    # "构型": 10
+
   # 随机一致性检查（只在 generate_selectors_txt 时触发）
-  # -------------------------
   enable_random_consistency_check: false
 
   # 随机抽样“不同 taskid 目录”的数量（每个 task 取 1 个 json）
