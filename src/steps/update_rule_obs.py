@@ -119,7 +119,7 @@ def run_step(
             )
 
             full_prefix = _format_prefix(obs_prefix_full_tpl, model=model, time_tag=time_tag)
-            full_dst = f"obs://{bucket}/{full_prefix}range_full.csv"
+            full_dst = f"obs://{bucket}/{full_prefix}{time_tag}_range_full.csv"
 
             _ensure_obs_dir(
                 obsutil_exe=obsutil_exe,

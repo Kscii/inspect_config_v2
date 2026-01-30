@@ -36,7 +36,7 @@ global:
       obs_bucket: "openloong-apps-dev-private"
     prod:
       # 生产环境 API 根地址（按你们实际地址填写/替换）
-      base_url: "https://prod-dojo-api.openloong.org.cn"
+      base_url: "https://dojo-api.openloong.org.cn"
       # 生产环境 OBS bucket
       obs_bucket: "openloong-apps-prod-private"
 
@@ -76,6 +76,20 @@ global:
       191: "QINGLOONGV2.5-TACTILE"
       194: "BUTLERV3"
     prod:
+      187: "BUTLERV3"
+      188: "QINGLOONGV2.5-TACTILE"
+      189: "QINGLOONGV2.5"
+      190: "R1"
+      191: "PIKA"
+      192: "S1"
+      196: "KUAVO_4PRO_GRIPPER"
+      197: "COBOTMAGICV2.0"
+      199: "UR"
+      200: "GR2"
+      201: "FRANKA"
+      202: "DWHEEL-TACTILE"
+      203: "A2D"
+      204: "A2"
 
 
 # ==============================================================================
