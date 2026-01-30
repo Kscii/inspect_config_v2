@@ -189,6 +189,9 @@ def _merge_step_result_into_runtime(step_name: str, result: Any, runtime: Dict[s
         # 覆盖 ranges.csv 映射（因为 test_range 可能输出到新路径）
         runtime["model_to_ranges_csv"] = {k: Path(v) for k, v in d.get("model_to_ranges_csv", {}).items()}
 
+    elif step_name == "generate_info":
+        runtime["model_to_info_csv"] = {k: Path(v) for k, v in d.get("model_to_info_csv", {}).items()}
+
     elif step_name == "pack_csv":
         runtime["model_to_ranges_txt"] = {k: Path(v) for k, v in d.get("model_to_ranges_txt", {}).items()}
 
