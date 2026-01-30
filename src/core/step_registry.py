@@ -22,6 +22,7 @@ STEP_ORDER: List[str] = [
     "find_range",
     "find_range_full",
     "test_range",
+    "generate_info",
     "pack_csv",
     "build_sql",
     "update_rule_obs",

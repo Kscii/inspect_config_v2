@@ -23,6 +23,7 @@ global:
     - find_range
     - find_range_full
     - test_range
+    - generate_info
     - pack_csv
     - build_sql
     - update_rule_obs  
@@ -530,6 +531,30 @@ test_range:
 
   show_fail_details: true
   max_fail_details: 1
+
+
+# ==============================================================================
+# Step: generate_info（负责：从 JSON 提取元数据信息，生成 info.csv）
+# ==============================================================================
+generate_info:
+  # JSON 文件后缀过滤
+  json_suffix: "_collect.json"
+
+  # CSV 编码
+  csv_encoding: "utf-8-sig"
+
+  # 字段缺失时的默认值
+  default_value: "N/A"
+
+  # 额外列配置（可选）
+  # extra_columns:
+  #   - column_name: "joint_action_name"  # CSV 列名
+  #     selector: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<data_info>.<joint_info>.<action/robot>.<name>"
+  #     models: ["COBOTMAGICV2.0", "GR2"]  # 可选，为空或省略则应用到所有构型
+  #   - column_name: "manufacturer"
+  #     selector: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<equipment_info>.<manufacturer>"
+  #     # models 未指定 = 应用到所有构型
+  extra_columns: []
 
 
 # ==============================================================================
