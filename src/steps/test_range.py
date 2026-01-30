@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+import numpy as np
 
 
 @dataclass
@@ -38,7 +39,16 @@ def run_step(
     enable_full: bool = bool(step_cfg.get("enable_full", True))
 
     models: List[str] = runtime["models"]
-    model_to_values_csv: Dict[str, Path] = runtime["model_to_values_csv"]
+    
+    # values_csv：优先从 runtime 获取，否则使用默认路径
+    model_to_values_csv: Dict[str, Path] = runtime.get("model_to_values_csv", {}) or {}
+    if not model_to_values_csv:
+        # 自动从默认路径构建 model_to_values_csv
+        csv_output_dirname = repo_root / "csv_output"
+        for model in models:
+            default_values = csv_output_dirname / model / f"{model}.csv"
+            if default_values.exists():
+                model_to_values_csv[model] = default_values
 
     # base/full 输入映射（full 若缺失则空 dict）
     model_to_ranges_csv_in: Dict[str, Path] = runtime.get("model_to_ranges_csv", {}) or {}
@@ -207,20 +217,23 @@ def _run_one_variant(
 
             # 非数值字段：用 true/true 或 non_numeric 列判断
             if non_numeric or (str(mn) == "true" and str(mx) == "true"):
-                # 非数值字段：这里只验证“非空”
-                pass_cnt = 0
-                fail_cnt = 0
-                for _, r in vdf.iterrows():
-                    val = r.get(f)
-                    ok = (val is not None) and (str(val).strip() != "") and (str(val).lower() != "nan")
-                    if ok:
-                        pass_cnt += 1
-                    else:
-                        fail_cnt += 1
-                        if show_fail_details:
-                            fail_details.append((model, str(r.get("file", "")), f, "empty"))
+                # 非数值字段：向量化验证“非空”
+                col_data = vdf[f]
+                # 检查非空、非NaN、非空字符串
+                valid_mask = pd.notna(col_data) & (col_data.astype(str).str.strip() != "") & (col_data.astype(str).str.lower() != "nan")
+                
+                pass_cnt = int(valid_mask.sum())
+                fail_cnt = int((~valid_mask).sum())
                 rate = pass_cnt / (pass_cnt + fail_cnt) if (pass_cnt + fail_cnt) else 0.0
                 field_stats.append((f, pass_cnt, fail_cnt, rate))
+                
+                # 收集失败详情（限制数量）
+                if show_fail_details and fail_cnt > 0:
+                    fail_indices = vdf.index[~valid_mask].tolist()
+                    limit = min(len(fail_indices), max_fail_details) if max_fail_details > 0 else len(fail_indices)
+                    for idx in fail_indices[:limit]:
+                        file_name = str(vdf.loc[idx, "file"]) if "file" in vdf.columns else ""
+                        fail_details.append((model, file_name, f, "empty"))
                 continue
 
             # 数值字段：区间检测
@@ -234,36 +247,60 @@ def _run_one_variant(
                 field_stats.append((f, pass_cnt, fail_cnt, 0.0))
                 continue
 
-            pass_cnt = 0
-            fail_cnt = 0
-            for _, r in vdf.iterrows():
-                raw = r.get(f)
-                x = _to_float(raw)
-                if x is None or (isinstance(x, float) and math.isnan(x)):
-                    if treat_nan_as_fail:
-                        fail_cnt += 1
-                        if show_fail_details:
-                            fail_details.append((model, str(r.get("file", "")), f, "nan"))
-                    else:
-                        # nan 不计入统计
-                        pass
-                    continue
-                ok = (mn_f <= x <= mx_f)
-                if ok:
-                    pass_cnt += 1
-                else:
-                    fail_cnt += 1
-                    if show_fail_details:
-                        fail_details.append((model, str(r.get("file", "")), f, f"out_of_range:{x} not in [{mn_f},{mx_f}]"))
+            # 向量化数值检测
+            col_data = vdf[f]
+            
+            # 转换为数值，无法转换的变为 NaN
+            numeric_data = pd.to_numeric(col_data, errors='coerce')
+            
+            # NaN 处理
+            if treat_nan_as_fail:
+                # NaN 算失败
+                valid_mask = pd.notna(numeric_data) & (numeric_data >= mn_f) & (numeric_data <= mx_f)
+                pass_cnt = int(valid_mask.sum())
+                fail_cnt = len(vdf) - pass_cnt
+            else:
+                # NaN 不计入统计
+                not_nan_mask = pd.notna(numeric_data)
+                in_range_mask = (numeric_data >= mn_f) & (numeric_data <= mx_f)
+                valid_mask = not_nan_mask & in_range_mask
+                
+                pass_cnt = int(valid_mask.sum())
+                fail_cnt = int(not_nan_mask.sum() - pass_cnt)
+            
             total = pass_cnt + fail_cnt
             rate = pass_cnt / total if total else 0.0
             field_stats.append((f, pass_cnt, fail_cnt, rate))
+            
+            # 收集失败详情（限制数量）
+            if show_fail_details and fail_cnt > 0:
+                if treat_nan_as_fail:
+                    # NaN 和超出范围都是失败
+                    fail_mask = ~valid_mask
+                else:
+                    # 只有超出范围算失败（排除 NaN）
+                    fail_mask = not_nan_mask & ~in_range_mask
+                
+                fail_indices = vdf.index[fail_mask].tolist()
+                limit = min(len(fail_indices), max_fail_details) if max_fail_details > 0 else len(fail_indices)
+                
+                for idx in fail_indices[:limit]:
+                    file_name = str(vdf.loc[idx, "file"]) if "file" in vdf.columns else ""
+                    val = numeric_data.loc[idx]
+                    if pd.isna(val):
+                        reason = "nan"
+                    else:
+                        reason = f"out_of_range:{val} not in [{mn_f},{mx_f}]"
+                    fail_details.append((model, file_name, f, reason))
 
-        # 写回到 rdf
+        # 写回到 rdf（优化：使用列表解析一次性构建）
         stats_map = {f: (pc, fc, rt) for f, pc, fc, rt in field_stats}
-        rdf["pass_count"] = rdf["field"].map(lambda x: stats_map.get(str(x), (None, None, None))[0])
-        rdf["fail_count"] = rdf["field"].map(lambda x: stats_map.get(str(x), (None, None, None))[1])
-        rdf["pass_rate"] = rdf["field"].map(lambda x: stats_map.get(str(x), (None, None, None))[2])
+        
+        # 优化：使用向量化操作填充统计列
+        field_to_stats = rdf["field"].astype(str).map(stats_map)
+        rdf["pass_count"] = field_to_stats.apply(lambda x: x[0] if x is not None else None)
+        rdf["fail_count"] = field_to_stats.apply(lambda x: x[1] if x is not None else None)
+        rdf["pass_rate"] = field_to_stats.apply(lambda x: x[2] if x is not None else None)
 
         # 输出路径：默认覆盖 ranges_csv
         if output_ranges_csv is None:
