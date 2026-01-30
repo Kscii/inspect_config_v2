@@ -4,16 +4,17 @@
 global:
   # 要执行的步骤
   steps_to_run:
-    - download
-    - selectors
-    - collect
-    - find_range
-    - find_range_full
-    - test_range
-    - pack_csv
-    - build_sql
-    - update_rule_obs  
-    - update_rule_api
+    # - download
+    # - selectors
+    # - collect
+    # - find_range
+    # - find_range_full
+    # - test_range
+    - generate_info
+    # - pack_csv
+    # - build_sql
+    # - update_rule_obs  
+    # - update_rule_api
 
   # 日志模式：
   # - normal：尽量保持你原来“console log/打印”的格式与信息量（默认）
@@ -91,11 +92,24 @@ download:
 # Step: selectors（负责：生成 selector 列表 + 过滤规则）
 # ==============================================================================
 selectors:
+  # 并集模式
+  use_union_of_all_samples: true
+
+  # 并集模式下的最小样本数过滤
+  enable_union_min_sample_filter: ture
+  
+  # 全局默认阈值：字段至少在 N 个样本中出现才保留
+  union_min_sample_count: 2
+  
+  # 按构型覆盖阈值（可选）
+  # union_min_sample_count_by_model:
+    # "构型": 10
+
   # 随机一致性检查（只在 generate_selectors_txt 时触发）
   enable_random_consistency_check: false
 
   # 随机抽样“不同 taskid 目录”的数量（每个 task 取 1 个 json）
-  consistency_sample_tasks: 100
+  consistency_sample_tasks: 10000
 
   # 随机种子：保证可复现（不想固定就设为 null）
   consistency_random_seed: 0
@@ -145,6 +159,22 @@ test_range:
   max_fail_details: 1
 
 # ==============================================================================
+# Step: generate_info（负责：从 JSON 提取元数据信息，生成 info.csv）
+# ==============================================================================
+generate_info:
+
+  # 额外列配置（可选）
+  # extra_columns:
+  #   - column_name: "joint_action_name"  # CSV 列名
+  #     selector: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<data_info>.<joint_info>.<action/robot>.<name>"
+  #     models: ["COBOTMAGICV2.0", "GR2"]  # 可选，为空或省略则应用到所有构型
+  #   - column_name: "manufacturer"
+  #     selector: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<equipment_info>.<manufacturer>"
+  #     # models 未指定 = 应用到所有构型
+  extra_columns: []
+
+
+# ==============================================================================
 # Step: pack_csv（负责：把 ranges.csv 转成 ranges.txt）
 # ==============================================================================
 
@@ -162,19 +192,19 @@ build_sql:
 # ==============================================================================
 update_rule_obs:
   # dev / prod（bucket 从 global.presets.<preset>.obs_bucket 取）
-  current_preset: "dev"
+  current_preset: "prod"
 
 # ==============================================================================
 # Step: update_rule_api（负责：调用接口更新规则）
 # ==============================================================================
 update_rule_api:
   # 当前使用哪个预设（dev 或 prod）
-  current_preset: "dev"
+  current_preset: "prod"
 
   # header 名：按你接口要求是 accesstoken
-  access_token: "eyJhbGciOiJSUzI1NiIsImtpZCI6ImRhdGEtY29sbGVjdG9yLWNlcnRzIiwidHlwIjoiSldUIn0.eyJvd25lciI6ImRhdGEtY29sbGVjdG9yIiwibmFtZSI6ImZhbmd4dWVqaWFuIiwiY3JlYXRlZFRpbWUiOiIyMDI1LTEyLTMwVDA5OjE2OjQ2KzA4OjAwIiwidXBkYXRlZFRpbWUiOiIyMDI2LTAxLTE1VDE4OjMyOjI2KzA4OjAwIiwiZGVsZXRlZFRpbWUiOiIiLCJpZCI6ImQzNzkwNWIzLWExYzEtNDdlNS05NTZjLWUzZjFkZjI0MDAwNCIsInR5cGUiOiJub3JtYWwtdXNlciIsInBhc3N3b3JkIjoiIiwicGFzc3dvcmRTYWx0IjoiIiwicGFzc3dvcmRUeXBlIjoicGxhaW4iLCJkaXNwbGF5TmFtZSI6ImZhbmd4dWVqaWFuIiwiZmlyc3ROYW1lIjoiIiwibGFzdE5hbWUiOiIiLCJhdmF0YXIiOiJodHRwczovL2Nkbi5jYXNiaW4ub3JnL2ltZy9jYXNiaW4uc3ZnIiwiYXZhdGFyVHlwZSI6IiIsInBlcm1hbmVudEF2YXRhciI6IiIsImVtYWlsIjoiIiwiZW1haWxWZXJpZmllZCI6ZmFsc2UsInBob25lIjoiMTM1MDE5Nzg2OTgiLCJjb3VudHJ5Q29kZSI6IkNOIiwicmVnaW9uIjoiIiwibG9jYXRpb24iOiIiLCJhZGRyZXNzIjpbXSwiYWZmaWxpYXRpb24iOiIiLCJ0aXRsZSI6IiIsImlkQ2FyZFR5cGUiOiIiLCJpZENhcmQiOiIiLCJob21lcGFnZSI6IiIsImJpbyI6IiIsImxhbmd1YWdlIjoiIiwiZ2VuZGVyIjoiIiwiYmlydGhkYXkiOiIiLCJlZHVjYXRpb24iOiIiLCJzY29yZSI6MCwia2FybWEiOjAsInJhbmtpbmciOjEyNywiaXNEZWZhdWx0QXZhdGFyIjpmYWxzZSwiaXNPbmxpbmUiOmZhbHNlLCJpc0FkbWluIjpmYWxzZSwiaXNGb3JiaWRkZW4iOmZhbHNlLCJpc0RlbGV0ZWQiOmZhbHNlLCJzaWdudXBBcHBsaWNhdGlvbiI6ImRhdGEtY29sbGVjdG9yLWFwcGxpY2F0aW9uIiwiaGFzaCI6IiIsInByZUhhc2giOiIiLCJhY2Nlc3NLZXkiOiIiLCJhY2Nlc3NTZWNyZXQiOiIiLCJnaXRodWIiOiIiLCJnb29nbGUiOiIiLCJxcSI6IiIsIndlY2hhdCI6IiIsImZhY2Vib29rIjoiIiwiZGluZ3RhbGsiOiIiLCJ3ZWlibyI6IiIsImdpdGVlIjoiIiwibGlua2VkaW4iOiIiLCJ3ZWNvbSI6IiIsImxhcmsiOiIiLCJnaXRsYWIiOiIiLCJjcmVhdGVkSXAiOiIiLCJsYXN0U2lnbmluVGltZSI6IiIsImxhc3RTaWduaW5JcCI6IiIsInByZWZlcnJlZE1mYVR5cGUiOiIiLCJyZWNvdmVyeUNvZGVzIjpudWxsLCJ0b3RwU2VjcmV0IjoiIiwibWZhUGhvbmVFbmFibGVkIjpmYWxzZSwibWZhRW1haWxFbmFibGVkIjpmYWxzZSwibGRhcCI6IiIsInByb3BlcnRpZXMiOnt9LCJyb2xlcyI6W10sInBlcm1pc3Npb25zIjpbXSwiZ3JvdXBzIjpbXSwibGFzdFNpZ25pbldyb25nVGltZSI6IiIsInNpZ25pbldyb25nVGltZXMiOjAsIm1hbmFnZWRBY2NvdW50cyI6bnVsbCwidG9rZW5UeXBlIjoiYWNjZXNzLXRva2VuIiwidGFnIjoiIiwic2NvcGUiOiJhbGwiLCJhenAiOiI5NTI1OWJlNjBkMTk2MmFkN2Q1MSIsImlzcyI6Imh0dHBzOi8vc2luZ2xlLXNpZ24tb24tc2VydmljZS5kYXRhLWFwcHMuc3ZjLmNsdXN0ZXIubG9jYWwiLCJzdWIiOiJkMzc5MDViMy1hMWMxLTQ3ZTUtOTU2Yy1lM2YxZGYyNDAwMDQiLCJhdWQiOlsiOTUyNTliZTYwZDE5NjJhZDdkNTEiXSwiZXhwIjoxNzY5NjkyOTI1LCJuYmYiOjE3Njk2Nzg1MjUsImlhdCI6MTc2OTY3ODUyNSwianRpIjoiYWRtaW4vYjhiNDllNzctNjI2NS00NTFjLThmNDAtZTk1MDExOWJjMTEzIn0.rHil_iyTVCBV2Z8OHLYK-NL39GpUo0eic9PBwUK0DJKHA9i46c6NuXu6DsBok6DOhg5PTLD1xB-KGz7CuJ4oBC_smtcnGCRsdxBLnTat0a_SmyCttlHySPu2zAOL4QmkZWetO1f1rJ4-acz-JAEKtdekYOh6cXCc5GYSaXSDQlrPeQyU6-WX14mV1-WHMCSxvxjU38-DzBHKpITSDyS4nEOijeRVmLdhgqiPIOpnycyAZzeQTcYgEBUnLSJDRSJ12jc3stiFDk6h57C6_itUtkbrrkgZJNyBXftUv9H-BNrHgg2NWZih0r2jd9R2n65RbWohpPO2bYykf1jY60ChUhUyKIyUJUPtzmj0VvNLY--hQA-DUkBhWCrfPyAX8EfK7twEfpZMTS2ynDpk9gqdDCfWWDqSyiosfL--zktT4-aX_Jw4LCCGonPko4M1RR1c_rxTD_xCZax0SNdVAbTQMT266eMMa9dBe1oHCxnEHo5QhF9IcTy4KZb8NRcuflLo5wk3z3pqovxixPF-TyYIuIg0uI3lxqJqi2llNA9m0ANsiJNqCyk2ktgj60J9NKqsiOcij6rDrpwiCvh46xrP3LMgqXBr0KF0A40U9TXFxWKLzj968AQo0a58hNKef2-KNM2nhw1KjWGYx-_kdFgUlb8mpj4i4fna09i4zi-oe1c"
+  access_token: "eyJhbGciOiJSUzI1NiIsImtpZCI6ImRhdGEtY29sbGVjdG9yLWNlcnQiLCJ0eXAiOiJKV1QifQ.eyJvd25lciI6Imh1bWFub2lkLXJvYm90IiwibmFtZSI6ImZhbmd4dWVqaWFuIiwiY3JlYXRlZFRpbWUiOiIyMDI1LTEyLTEyVDA5OjM1OjAzKzA4OjAwIiwidXBkYXRlZFRpbWUiOiIyMDI2LTAxLTEzVDE4OjM5OjQxKzA4OjAwIiwiZGVsZXRlZFRpbWUiOiIiLCJpZCI6IjdhMDBhY2ZhLTFjZTEtNDYzZC04YjkxLTFiYzhhNTM5OWU1MSIsInR5cGUiOiJub3JtYWwtdXNlciIsInBhc3N3b3JkIjoiIiwicGFzc3dvcmRTYWx0IjoiIiwicGFzc3dvcmRUeXBlIjoiYXJnb24yaWQiLCJkaXNwbGF5TmFtZSI6IuaWueWtpua4kCIsImZpcnN0TmFtZSI6IiIsImxhc3ROYW1lIjoiIiwiYXZhdGFyIjoiaHR0cHM6Ly9jZG4uY2FzYmluLm9yZy9pbWcvY2FzYmluLnN2ZyIsImF2YXRhclR5cGUiOiIiLCJwZXJtYW5lbnRBdmF0YXIiOiIiLCJlbWFpbCI6IiIsImVtYWlsVmVyaWZpZWQiOmZhbHNlLCJwaG9uZSI6IjEzNTAxOTc4Njk4IiwiY291bnRyeUNvZGUiOiJDTiIsInJlZ2lvbiI6IiIsImxvY2F0aW9uIjoiIiwiYWRkcmVzcyI6W10sImFmZmlsaWF0aW9uIjoiIiwidGl0bGUiOiIiLCJpZENhcmRUeXBlIjoiIiwiaWRDYXJkIjoiIiwiaG9tZXBhZ2UiOiIiLCJiaW8iOiIiLCJsYW5ndWFnZSI6IiIsImdlbmRlciI6IiIsImJpcnRoZGF5IjoiIiwiZWR1Y2F0aW9uIjoiIiwic2NvcmUiOjAsImthcm1hIjowLCJyYW5raW5nIjoxMjgsImlzRGVmYXVsdEF2YXRhciI6ZmFsc2UsImlzT25saW5lIjpmYWxzZSwiaXNBZG1pbiI6ZmFsc2UsImlzRm9yYmlkZGVuIjpmYWxzZSwiaXNEZWxldGVkIjpmYWxzZSwic2lnbnVwQXBwbGljYXRpb24iOiJkYXRhLWNvbGxlY3RvciIsImhhc2giOiIiLCJwcmVIYXNoIjoiIiwiYWNjZXNzS2V5IjoiIiwiYWNjZXNzU2VjcmV0IjoiIiwiZ2l0aHViIjoiIiwiZ29vZ2xlIjoiIiwicXEiOiIiLCJ3ZWNoYXQiOiIiLCJmYWNlYm9vayI6IiIsImRpbmd0YWxrIjoiIiwid2VpYm8iOiIiLCJnaXRlZSI6IiIsImxpbmtlZGluIjoiIiwid2Vjb20iOiIiLCJsYXJrIjoiIiwiZ2l0bGFiIjoiIiwiY3JlYXRlZElwIjoiIiwibGFzdFNpZ25pblRpbWUiOiIiLCJsYXN0U2lnbmluSXAiOiIiLCJwcmVmZXJyZWRNZmFUeXBlIjoiIiwicmVjb3ZlcnlDb2RlcyI6bnVsbCwidG90cFNlY3JldCI6IiIsIm1mYVBob25lRW5hYmxlZCI6ZmFsc2UsIm1mYUVtYWlsRW5hYmxlZCI6ZmFsc2UsImxkYXAiOiIiLCJwcm9wZXJ0aWVzIjp7fSwicm9sZXMiOltdLCJwZXJtaXNzaW9ucyI6W10sImdyb3VwcyI6W10sImxhc3RTaWduaW5Xcm9uZ1RpbWUiOiIiLCJzaWduaW5Xcm9uZ1RpbWVzIjowLCJtYW5hZ2VkQWNjb3VudHMiOm51bGwsInRva2VuVHlwZSI6ImFjY2Vzcy10b2tlbiIsInRhZyI6IiIsInNjb3BlIjoiYWxsIiwiYXpwIjoiZDcxY2E1ZDk4YzQzZjRkMjJhMjAiLCJpc3MiOiJodHRwczovL3NpbmdsZS1zaWduLW9uLXNlcnZpY2UuZGF0YS1hcHBzLnN2Yy5jbHVzdGVyLmxvY2FsIiwic3ViIjoiN2EwMGFjZmEtMWNlMS00NjNkLThiOTEtMWJjOGE1Mzk5ZTUxIiwiYXVkIjpbImQ3MWNhNWQ5OGM0M2Y0ZDIyYTIwIl0sImV4cCI6MTc2OTc2MjY5MywibmJmIjoxNzY5NzUxODkzLCJpYXQiOjE3Njk3NTE4OTMsImp0aSI6ImFkbWluL2U1YWZhOTRmLTFmNWMtNDdlMi05ODk5LTRjODRlMDE4NjVkOCJ9.ne9-ucYefAD62Njv6kBJu3s4zC2Mr8afyetqadKklu6vJlrVIHoWdRh_4B0Ct6Hi_avhCQQDBOc80lyyIBaq7ud84BeHP5maUjfPiv3DmBQx-fMwhe9gzAyYxJfAE4wtmnTuoS0Ga9WwXQHJyhEQHJOaGJfFwKttIlNrMKd4Eoq6wOU5hnf3Wo3yAHh1ClHdYGR8kVH03svoC2caxp4_x44ggxjo43WBqbmNhyoGbrTPKOApKNu-x5ktaNqyL8fJfT69X4BEcrLBHp3dUcfrcHsDkkNqxqvYogNHWN20-WtVr8bn66uCp-iJ6h6ledkSiq7e14MBf5CNCyOmW2AnWZ8LOOSGWpR0_F4dpt-GxzNOIZKeQKpQHIR9BrcatNzCXx_m4sk-5PJUgMl4LUgAXdhFMTHlZGoF5JgDAPC2W5z767752nuoJ1hPLkUmyAQKpzCt7bJvJaYjGhUFuT5FPPoKxa2brw3BTwbWQcjuCCfgX9-7uJbKSkwKpcWRafT85jfvEHzCI18wD333aI36CtVL9rZkyRAQdzW9k2LEPjijaDpTtqgteuKDRZZttNIgGie_vZKIoaTiUx7W0pa3EtKq7CAFcvovjuoxZpbiRabNNGlyfR9l_soGkJ9OECuqNaUH6pTo2mBqv9HWwjN6FLIg4hLvXv_iuyyOHAKE3hE"
   dry_run: false
-  verify_tls: true
+  verify_tls: false
   timeout_sec: 30
 
 
