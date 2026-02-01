@@ -15,3 +15,4 @@ run_collect.csv
 temp.json
 config.local.yaml
 task_id.csv
+*.csv

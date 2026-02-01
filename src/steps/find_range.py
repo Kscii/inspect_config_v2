@@ -80,8 +80,8 @@ def run_step(
             _log(logger, log_mode, f"[find_range] model={model} values.csv 为空 -> 跳过")
             continue
 
-        # 只处理非 file 列
-        fields = [c for c in df.columns if c != "file"]
+        # 只处理非 episode_id 列
+        fields = [c for c in df.columns if c != "episode_id"]
         rows: List[Dict[str, Any]] = []
 
         for field in fields:
