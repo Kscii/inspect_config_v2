@@ -25,6 +25,7 @@ STEP_ORDER: List[str] = [
     "generate_info",
     "generate_db_csv",
     "import_db",
+    "visualize_db",
     "pack_csv",
     "build_sql",
     "update_rule_obs",
