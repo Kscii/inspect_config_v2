@@ -25,6 +25,7 @@ global:
     - test_range
     - generate_db_csv
     - import_db
+    - visualize_db
     - pack_csv
     - build_sql
     - update_rule_obs  
@@ -550,10 +551,41 @@ generate_db_csv:
   # 字段缺失时的默认值
   default_value: "N/A"
 
-  # 元数据提取配置（使用 selector 语法）
-  metadata_selectors:
-    sn: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<equipment_info>.<sn>"
-    collected_at: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<collected_at>"
+  # 表结构配置：为各个 CSV 文件定义额外的列（通过 selector 提取）
+  # 说明：
+  # - 默认列（如 episode_id, taskid, model, filename 等）会自动生成，无需配置
+  # - 只需要配置需要从 JSON 中通过 selector 提取的额外列
+  # - 支持的表：episode, field, field_value, thresholds_base, thresholds_full
+  table_extra_columns:
+    # episode 表的额外列
+    episode:
+      sn: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<equipment_info>.<sn>"
+      collected_at: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<collected_at>"
+      # 可以继续添加更多列，例如：
+      # duration_ms: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<duration_in_ms>"
+      # version: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<ver>"
+    
+    # field 表的额外列（如果需要）
+    # field:
+    #   custom_field: "selector..."
+    
+    # field_value 表的额外列（如果需要）
+    # field_value:
+    #   custom_field: "selector..."
+    
+    # thresholds_base 表的额外列（如果需要）
+    # thresholds_base:
+    #   custom_field: "selector..."
+    
+    # thresholds_full 表的额外列（如果需要）
+    # thresholds_full:
+    #   custom_field: "selector..."
+
+  # 兼容旧配置：metadata_selectors（已废弃，建议使用 table_extra_columns.episode）
+  # 如果同时存在，会自动合并到 episode 表
+  # metadata_selectors:
+  #   sn: "selector..."
+  #   collected_at: "selector..."
 
 
 # ==============================================================================
@@ -661,5 +693,30 @@ update_rule_api:
   fail_if_id_missing: true
   fail_if_txt_missing: true
   enable_full: true
+
+
+# ==============================================================================
+# Step: visualize_db（负责：Plotly Dash 可视化数据库数据）
+# ==============================================================================
+visualize_db:
+  # Dash 服务器配置
+  host: "127.0.0.1"
+  port: 8050
+  debug: false
+
+  # 数据库连接配置（从 import_db 继承）
+  db_host: "localhost"
+  db_port: 5432
+  db_database: "inspectdb"
+  db_user: "inspect"
+  db_password: "inspect_pw"
+
+  # 图表配置
+  max_fields: 5  # 多字段对比最大数量
+  chart_height: 600  # 图表高度（px）
+
+  # 导出配置
+  export_dir: "exports"  # PNG 导出目录
+  export_dpi: 300  # 导出分辨率
 
 

@@ -42,15 +42,17 @@ def run_step(
     db_dirname: str = str(step_cfg.get("db_dirname", "db"))
     default_value: str = str(step_cfg.get("default_value", "N/A"))
     
+    # 读取各表的额外列配置
+    table_extra_columns: Dict[str, Dict[str, str]] = dict(step_cfg.get("table_extra_columns", {}))
+    
+    # 兼容旧配置：如果存在 metadata_selectors，合并到 episode 表
     metadata_selectors: Dict[str, str] = dict(step_cfg.get("metadata_selectors", {}))
-    sn_selector = metadata_selectors.get(
-        "sn",
-        ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<equipment_info>.<sn>"
-    )
-    collected_at_selector = metadata_selectors.get(
-        "collected_at",
-        ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<collected_at>"
-    )
+    if metadata_selectors:
+        episode_cols = table_extra_columns.get("episode", {})
+        for key, selector in metadata_selectors.items():
+            if key not in episode_cols:
+                episode_cols[key] = selector
+        table_extra_columns["episode"] = episode_cols
 
     # 输入映射
     model_to_values_csv: Dict[str, Path] = runtime.get("model_to_values_csv", {}) or {}
@@ -107,6 +109,9 @@ def run_step(
         # ========================================
         episode_rows = []
         episode_id_set = set()
+        
+        # 获取 episode 表的额外列配置
+        episode_extra_cols = table_extra_columns.get("episode", {})
 
         for json_path in json_files:
             try:
@@ -124,22 +129,31 @@ def run_step(
             episode_id_set.add(episode_id)
 
             taskid = _extract_taskid_from_path(json_path, model_root, default_value)
-            sn = _extract_value_by_selector(data, sn_selector, default_value)
-            collected_at = _extract_value_by_selector(data, collected_at_selector, default_value)
-
-            episode_rows.append({
+            
+            # 默认列
+            row = {
                 "episode_id": episode_id,
                 "taskid": taskid,
                 "model": model,
-                "sn": sn,
-                "collected_at": collected_at,
-                "filename": filename,
-            })
+            }
+            
+            # 添加额外列（通过 selector 提取）
+            for col_name, selector in episode_extra_cols.items():
+                value = _extract_value_by_selector(data, selector, default_value)
+                row[col_name] = value
+            
+            # filename 作为最后一列
+            row["filename"] = filename
+            
+            episode_rows.append(row)
 
-        episode_df = pd.DataFrame(episode_rows, columns=["episode_id", "taskid", "model", "sn", "collected_at", "filename"])
+        # 构建列顺序：episode_id, taskid, model, 额外列..., filename
+        episode_columns = ["episode_id", "taskid", "model"] + list(episode_extra_cols.keys()) + ["filename"]
+        episode_df = pd.DataFrame(episode_rows, columns=episode_columns)
         episode_csv = out_dir / f"{model}_episode.csv"
         episode_df.to_csv(episode_csv, index=False, encoding=csv_encoding)
         _log(logger, log_mode, f"[generate_db_csv] model={model} 生成 episode.csv ({len(episode_rows)} 行)")
+
 
         # ========================================
         # 2. 生成 {model}_field.csv
@@ -161,18 +175,34 @@ def run_step(
                 else:
                     field_type_map[field] = "numeric"
 
+        # 获取 field 表的额外列配置
+        field_extra_cols = table_extra_columns.get("field", {})
+        
         field_rows = []
         for field_id, field in enumerate(fields, start=1):
             rule_code = _extract_rule_code(field)
             field_type = field_type_map.get(field, "")
-            field_rows.append({
+            
+            # 默认列
+            row = {
                 "field_id": field_id,
                 "field": field,
                 "rule_code": rule_code,
                 "type": field_type,
-            })
+            }
+            
+            # 添加额外列（注意：field 表的额外列一般不从 JSON 提取，因为没有 episode 上下文）
+            # 如果需要从 field 字符串中提取，可以在这里实现
+            for col_name, selector in field_extra_cols.items():
+                # 这里假设 selector 是静态值或从 field 字符串提取的表达式
+                # 暂时使用 default_value
+                row[col_name] = default_value
+            
+            field_rows.append(row)
 
-        field_df = pd.DataFrame(field_rows, columns=["field_id", "field", "rule_code", "type"])
+        # 构建列顺序
+        field_columns = ["field_id", "field", "rule_code", "type"] + list(field_extra_cols.keys())
+        field_df = pd.DataFrame(field_rows, columns=field_columns)
         field_csv = out_dir / f"{model}_field.csv"
         field_df.to_csv(field_csv, index=False, encoding=csv_encoding)
         _log(logger, log_mode, f"[generate_db_csv] model={model} 生成 field.csv ({len(field_rows)} 行)")
@@ -182,6 +212,9 @@ def run_step(
         # ========================================
         # 构建 field -> field_id 映射
         field_to_id = {row["field"]: row["field_id"] for row in field_rows}
+        
+        # 获取 field_value 表的额外列配置
+        field_value_extra_cols = table_extra_columns.get("field_value", {})
 
         # 转换为长格式
         field_value_rows = []
@@ -197,13 +230,23 @@ def run_step(
                     value = ""
                 else:
                     value = str(value)
-                field_value_rows.append({
+                
+                # 默认列
+                fv_row = {
                     "episode_id": episode_id,
                     "field_id": field_id,
                     "value": value,
-                })
+                }
+                
+                # 添加额外列（field_value 表的额外列一般也不从 JSON 提取）
+                for col_name, selector in field_value_extra_cols.items():
+                    fv_row[col_name] = default_value
+                
+                field_value_rows.append(fv_row)
 
-        field_value_df = pd.DataFrame(field_value_rows, columns=["episode_id", "field_id", "value"])
+        # 构建列顺序
+        field_value_columns = ["episode_id", "field_id", "value"] + list(field_value_extra_cols.keys())
+        field_value_df = pd.DataFrame(field_value_rows, columns=field_value_columns)
         field_value_csv = out_dir / f"{model}_field_value.csv"
         field_value_df.to_csv(field_value_csv, index=False, encoding=csv_encoding)
         _log(logger, log_mode, f"[generate_db_csv] model={model} 生成 field_value.csv ({len(field_value_rows)} 行)")
@@ -213,12 +256,22 @@ def run_step(
         # ========================================
         if ranges_csv and ranges_csv.exists():
             rdf = pd.read_csv(ranges_csv, encoding=csv_encoding)
-            # 确保列顺序
+            # 确保默认列存在
             required_cols = ["field", "min", "max", "pass_count", "fail_count", "pass_rate"]
             for col in required_cols:
                 if col not in rdf.columns:
                     rdf[col] = ""
-            thresholds_base_df = rdf[required_cols]
+            
+            # 获取 thresholds_base 表的额外列配置
+            thresholds_base_extra_cols = table_extra_columns.get("thresholds_base", {})
+            
+            # 添加额外列
+            for col_name, selector in thresholds_base_extra_cols.items():
+                rdf[col_name] = default_value
+            
+            # 构建列顺序
+            thresholds_base_columns = required_cols + list(thresholds_base_extra_cols.keys())
+            thresholds_base_df = rdf[thresholds_base_columns]
             thresholds_base_csv = out_dir / f"{model}_thresholds_base.csv"
             thresholds_base_df.to_csv(thresholds_base_csv, index=False, encoding=csv_encoding)
             _log(logger, log_mode, f"[generate_db_csv] model={model} 生成 thresholds_base.csv ({len(thresholds_base_df)} 行)")
@@ -230,12 +283,22 @@ def run_step(
         # ========================================
         if ranges_full_csv and ranges_full_csv.exists():
             rfdf = pd.read_csv(ranges_full_csv, encoding=csv_encoding)
-            # 确保列顺序
+            # 确保默认列存在
             required_cols = ["field", "min", "max", "pass_count", "fail_count", "pass_rate"]
             for col in required_cols:
                 if col not in rfdf.columns:
                     rfdf[col] = ""
-            thresholds_full_df = rfdf[required_cols]
+            
+            # 获取 thresholds_full 表的额外列配置
+            thresholds_full_extra_cols = table_extra_columns.get("thresholds_full", {})
+            
+            # 添加额外列
+            for col_name, selector in thresholds_full_extra_cols.items():
+                rfdf[col_name] = default_value
+            
+            # 构建列顺序
+            thresholds_full_columns = required_cols + list(thresholds_full_extra_cols.keys())
+            thresholds_full_df = rfdf[thresholds_full_columns]
             thresholds_full_csv = out_dir / f"{model}_thresholds_full.csv"
             thresholds_full_df.to_csv(thresholds_full_csv, index=False, encoding=csv_encoding)
             _log(logger, log_mode, f"[generate_db_csv] model={model} 生成 thresholds_full.csv ({len(thresholds_full_df)} 行)")

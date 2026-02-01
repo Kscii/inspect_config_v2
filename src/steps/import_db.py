@@ -147,7 +147,7 @@ def _import_model(
 
         # 2. 创建表结构
         if create_tables_if_missing:
-            _create_tables(cur, schema, dry_run, logger, log_mode)
+            _create_tables(cur, schema, db_dir, model, dry_run, logger, log_mode)
 
         # 3. 导入数据（按顺序：episode → field → thresholds → field_value）
         # episode
@@ -225,63 +225,147 @@ def _import_model(
         cur.close()
 
 
-def _create_tables(cur, schema: str, dry_run: bool, logger, log_mode: str) -> None:
-    """创建表结构（如果不存在）"""
+def _create_tables(cur, schema: str, db_dir: Path, model: str, dry_run: bool, logger, log_mode: str) -> None:
+    """创建表结构（如果不存在），动态从 CSV 读取列定义"""
     
-    # 表定义（按照 CSV 列名）
-    tables = {
-        "episode": """
-            CREATE TABLE IF NOT EXISTS {schema}.episode (
-                episode_id TEXT PRIMARY KEY,
-                taskid TEXT,
-                model TEXT,
-                sn TEXT,
-                filename TEXT
-            )
-        """,
-        "field": """
-            CREATE TABLE IF NOT EXISTS {schema}.field (
-                field_id BIGINT PRIMARY KEY,
-                field TEXT UNIQUE NOT NULL,
-                rule_code TEXT,
-                type TEXT
-            )
-        """,
-        "thresholds_base": """
-            CREATE TABLE IF NOT EXISTS {schema}.thresholds_base (
-                field TEXT PRIMARY KEY,
-                min TEXT,
-                max TEXT,
-                pass_count BIGINT,
-                fail_count BIGINT,
-                pass_rate DOUBLE PRECISION
-            )
-        """,
-        "thresholds_full": """
-            CREATE TABLE IF NOT EXISTS {schema}.thresholds_full (
-                field TEXT PRIMARY KEY,
-                min TEXT,
-                max TEXT,
-                pass_count BIGINT,
-                fail_count BIGINT,
-                pass_rate DOUBLE PRECISION
-            )
-        """,
-        "field_value": """
-            CREATE TABLE IF NOT EXISTS {schema}.field_value (
-                episode_id TEXT NOT NULL,
-                field_id BIGINT NOT NULL,
-                value TEXT,
-                PRIMARY KEY (episode_id, field_id)
-            )
-        """,
+    # 定义核心列的基础类型（不含约束）
+    # 格式：{table_name: {column_name: base_type}}
+    core_column_base_types = {
+        "episode": {
+            "episode_id": "TEXT",
+            "taskid": "TEXT",
+            "model": "TEXT",
+            "sn": "TEXT",
+            "collected_at": "TEXT",
+            "filename": "TEXT",
+        },
+        "field": {
+            "field_id": "BIGINT",
+            "field": "TEXT",
+            "rule_code": "TEXT",
+            "type": "TEXT",
+        },
+        "thresholds_base": {
+            "field": "TEXT",
+            "min": "TEXT",
+            "max": "TEXT",
+            "pass_count": "BIGINT",
+            "fail_count": "BIGINT",
+            "pass_rate": "DOUBLE PRECISION",
+        },
+        "thresholds_full": {
+            "field": "TEXT",
+            "min": "TEXT",
+            "max": "TEXT",
+            "pass_count": "BIGINT",
+            "fail_count": "BIGINT",
+            "pass_rate": "DOUBLE PRECISION",
+        },
+        "field_value": {
+            "episode_id": "TEXT",
+            "field_id": "BIGINT",
+            "value": "TEXT",
+        },
+    }
+    
+    # 定义主键
+    primary_keys = {
+        "episode": "episode_id",
+        "field": "field_id",
+        "thresholds_base": "field",
+        "thresholds_full": "field",
+        "field_value": ["episode_id", "field_id"],  # 复合主键
+    }
+    
+    # 定义额外约束
+    unique_constraints = {
+        "field": ["field"],  # field 列需要 UNIQUE
     }
 
-    for table_name, create_sql in tables.items():
+    # 为每个表动态生成建表语句
+    tables_to_create = ["episode", "field", "thresholds_base", "thresholds_full", "field_value"]
+    
+    # 预先生成 schema_qualified（用于 SQL 语句）
+    schema_qualified = sql.Identifier(schema).as_string(cur)
+    
+    for table_name in tables_to_create:
+        csv_file = db_dir / f"{model}_{table_name}.csv"
+        
+        if not csv_file.exists():
+            continue
+        
+        # 从 CSV 读取列名
+        csv_columns = _read_csv_columns(csv_file)
+        if not csv_columns:
+            _log(logger, log_mode, f"[import_db] 警告：无法读取 {csv_file} 的列名")
+            continue
+        
+        _log(logger, log_mode, f"[import_db] {table_name} CSV 列: {csv_columns}")
+        
+        # 获取该表的核心列类型定义
+        base_types = core_column_base_types.get(table_name, {})
+        
+        # 构建列定义
+        column_defs = []
+        for col in csv_columns:
+            base_type = base_types.get(col, "TEXT")  # 额外列默认为 TEXT
+            
+            # 检查是否需要添加 UNIQUE 约束（但不是主键的情况）
+            col_def = f"{col} {base_type}"
+            if table_name in unique_constraints and col in unique_constraints[table_name]:
+                pk = primary_keys.get(table_name)
+                # 只有在不是主键的情况下才添加 UNIQUE
+                if not (isinstance(pk, str) and pk == col):
+                    col_def += " UNIQUE"
+            
+            # 检查是否需要添加 NOT NULL（对于非主键的外键列）
+            if table_name == "field_value" and col in ["episode_id", "field_id"]:
+                col_def += " NOT NULL"
+            
+            column_defs.append(col_def)
+        
+        # 添加主键约束
+        pk = primary_keys.get(table_name)
+        if pk:
+            if isinstance(pk, list):
+                # 复合主键
+                column_defs.append(f"PRIMARY KEY ({', '.join(pk)})")
+            else:
+                # 单列主键：在列定义中添加
+                for i, col_def in enumerate(column_defs):
+                    if col_def.startswith(f"{pk} "):
+                        column_defs[i] = col_def + " PRIMARY KEY"
+                        break
+        
+        # 先尝试删除旧表（如果列数不匹配，需要重建）
+        if not dry_run:
+            try:
+                # 检查表是否存在
+                check_sql = f"SELECT column_name FROM information_schema.columns WHERE table_schema = '{schema}' AND table_name = '{table_name}' ORDER BY ordinal_position"
+                cur.execute(check_sql)
+                existing_columns = [row[0] for row in cur.fetchall()]
+                
+                if existing_columns and existing_columns != csv_columns:
+                    _log(logger, log_mode, f"[import_db] 表 {schema}.{table_name} 列不匹配，删除重建")
+                    _log(logger, log_mode, f"[import_db]   现有列: {existing_columns}")
+                    _log(logger, log_mode, f"[import_db]   需要列: {csv_columns}")
+                    drop_sql = f"DROP TABLE IF EXISTS {schema_qualified}.{table_name} CASCADE"
+                    cur.execute(drop_sql)
+            except Exception as e:
+                # 忽略检查错误，继续创建表
+                _log(logger, log_mode, f"[import_db] 检查表结构时出错（忽略）: {e}")
+        
+        # 生成 CREATE TABLE 语句
+        schema_qualified = sql.Identifier(schema).as_string(cur)
+        columns_joined = ',\n    '.join(column_defs)
+        create_sql = f"CREATE TABLE IF NOT EXISTS {schema_qualified}.{table_name} (\n    {columns_joined}\n)"
+        
         if dry_run:
             _log(logger, log_mode, f"[import_db][DRY-RUN] 创建表: {schema}.{table_name}")
+            _log(logger, log_mode, f"[import_db][DRY-RUN] SQL: {create_sql}")
         else:
-            cur.execute(create_sql.format(schema=sql.Identifier(schema).as_string(cur)))
+            _log(logger, log_mode, f"[import_db] 创建表 SQL: {create_sql}")
+            cur.execute(create_sql)
             _log(logger, log_mode, f"[import_db] 创建表: {schema}.{table_name}")
 
     # 创建索引
@@ -340,6 +424,18 @@ def _import_table(
                 _log(logger, log_mode, f"[import_db] 导入成功：{csv_path} -> {schema}.{table}")
             except Exception as e:
                 raise RuntimeError(f"[import_db] 导入失败：{csv_path} -> {schema}.{table}，错误：{e}") from e
+
+
+def _read_csv_columns(csv_path: Path) -> List[str]:
+    """读取 CSV 文件的列名（从第一行）"""
+    try:
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            first_line = f.readline().strip()
+            if first_line:
+                return [col.strip() for col in first_line.split(",")]
+    except Exception:
+        pass
+    return []
 
 
 def _log(logger, log_mode: str, msg: str) -> None:

@@ -10,7 +10,9 @@ global:
     # - find_range
     # - find_range_full
     # - test_range
-    - generate_info
+    # - generate_db_csv
+    # - import_db
+    - visualize_db
     # - pack_csv
     # - build_sql
     # - update_rule_obs  
@@ -40,7 +42,7 @@ download:
   # 说明：
   # - bucket 从 global.presets.<preset>.obs_bucket 读取
   # - 你也可以把 current_preset 固定为 prod，并且只改 global.presets 中的 bucket/url
-  current_preset: "prod"
+  current_preset: "dev"
 
   # OBS 前缀（末尾带 / 不带都行）
   obs_prefix: "data-collector-svc/collect/"
@@ -158,21 +160,203 @@ test_range:
   show_fail_details: true
   max_fail_details: 1
 
-# ==============================================================================
-# Step: generate_info（负责：从 JSON 提取元数据信息，生成 info.csv）
-# ==============================================================================
-generate_info:
 
-  # 额外列配置（可选）
-  # extra_columns:
-  #   - column_name: "joint_action_name"  # CSV 列名
-  #     selector: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<data_info>.<joint_info>.<action/robot>.<name>"
-  #     models: ["COBOTMAGICV2.0", "GR2"]  # 可选，为空或省略则应用到所有构型
-  #   - column_name: "manufacturer"
-  #     selector: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<equipment_info>.<manufacturer>"
-  #     # models 未指定 = 应用到所有构型
-  extra_columns: []
+# ==============================================================================
+# Step: generate_db_csv（负责：生成用于导入 PostgreSQL 的 5 个 CSV 文件）
+# ==============================================================================
+generate_db_csv:
+  # JSON 文件后缀过滤
+  json_suffix: "_collect.json"
 
+  # CSV 编码
+  csv_encoding: "utf-8-sig"
+
+  # 数据库 CSV 输出目录名
+  db_dirname: "db"
+
+  # 字段缺失时的默认值
+  default_value: "N/A"
+
+  # 表结构配置：为各个 CSV 文件定义额外的列（通过 selector 提取）
+  # 说明：
+  # - 默认列（如 episode_id, taskid, model, filename 等）会自动生成，无需配置
+  # - 只需要配置需要从 JSON 中通过 selector 提取的额外列
+  # - 支持的表：episode, field, field_value, thresholds_base, thresholds_full
+  table_extra_columns:
+    # episode 表的额外列
+    episode:
+      sn: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<equipment_info>.<sn>"
+      collected_at: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<collected_at>"
+      # 可以继续添加更多列，例如：
+      # duration_ms: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<duration_in_ms>"
+      # version: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<ver>"
+    
+    # field 表的额外列（如果需要）
+    # field:
+    #   custom_field: "selector..."
+    
+    # field_value 表的额外列（如果需要）
+    # field_value:
+    #   custom_field: "selector..."
+    
+    # thresholds_base 表的额外列（如果需要）
+    # thresholds_base:
+    #   custom_field: "selector..."
+    
+    # thresholds_full 表的额外列（如果需要）
+    # thresholds_full:
+    #   custom_field: "selector..."
+
+
+# ==============================================================================
+# Step: visualize_db（负责：Plotly Dash 可视化数据库数据）
+# ==============================================================================
+visualize_db:
+  # Dash 服务器配置
+  host: "127.0.0.1"
+  port: 8050
+  debug: true  # 本地开发模式
+
+  # 数据库连接配置
+  db_host: "localhost"
+  db_port: 5432
+  db_database: "inspect"
+  db_user: "openloong"
+  db_password: "openloongINSPECTCONFIG"
+
+  # 图表配置
+  max_fields: 5
+  chart_height: 600
+
+  # 导出配置
+  export_dir: "exports"
+  export_dpi: 300
+
+  # 兼容旧配置：metadata_selectors（已废弃，建议使用 table_extra_columns.episode）
+  # 如果同时存在，会自动合并到 episode 表
+  # metadata_selectors:
+  #   sn: "selector..."
+  #   collected_at: "selector..."
+
+# ==============================================================================
+# Step: import_db（负责：将 CSV 导入到 PostgreSQL 数据库）
+# ==============================================================================
+import_db:
+  # 数据库连接配置
+  host: "localhost"
+  port: 5432
+  database: "inspect"
+  user: "openloong"
+  password: "openloongINSPECTCONFIG"
+
+  # 导入策略
+  truncate_before_import: true  # 每次导入前清空表
+  
+  # schema 命名规则（支持 {model} 和 {model_lower} 占位符）
+  schema_name_template: "{model_lower}"
+  
+  # 是否创建表（如果不存在）
+  create_tables_if_missing: true
+  
+  # 是否导入 thresholds_full
+  enable_full: true
+  
+  # db CSV 目录名
+  db_dirname: "db"
+  
+  # 是否演练
+  dry_run: false
+
+  # 表结构定义：定义每个表的列名和数据类型
+  # 说明：
+  # - 列名必须与 CSV 文件的表头完全匹配
+  # - 数据类型使用 PostgreSQL 标准类型
+  # - PRIMARY KEY 标记主键
+  # - 如果需要添加新列，同步修改 generate_db_csv.table_extra_columns
+  table_schemas:
+    # episode 表：存储 episode 基本信息
+    episode:
+      episode_id: "TEXT PRIMARY KEY"
+      taskid: "TEXT NOT NULL"
+      model: "TEXT NOT NULL"
+      sn: "TEXT"
+      collected_at: "TEXT"
+      filename: "TEXT NOT NULL"
+    
+    # field 表：存储字段定义
+    field:
+      field_id: "INTEGER PRIMARY KEY"
+      field: "TEXT NOT NULL"
+      rule_code: "TEXT"
+      type: "TEXT"
+    
+    # field_value 表：存储字段值（长格式）
+    field_value:
+      episode_id: "TEXT PRIMARY KEY"
+      field_id: "INTEGER PRIMARY KEY"
+      value: "TEXT"
+    
+    # thresholds_base 表：存储基础阈值
+    thresholds_base:
+      field: "TEXT PRIMARY KEY"
+      min: "TEXT"
+      max: "TEXT"
+      pass_count: "TEXT"
+      fail_count: "TEXT"
+      pass_rate: "TEXT"
+    
+    # thresholds_full 表：存储完整阈值
+    thresholds_full:
+      field: "TEXT PRIMARY KEY"
+      min: "TEXT"
+      max: "TEXT"
+      pass_count: "TEXT"
+      fail_count: "TEXT"
+      pass_rate: "TEXT"
+
+
+  # 表结构定义
+  # 说明：
+  # - 必须与 generate_db_csv 生成的 CSV 列完全匹配（列名和顺序）
+  # - 支持的数据类型：TEXT, BIGINT, INTEGER, DOUBLE PRECISION, BOOLEAN, TIMESTAMP 等
+  # - PRIMARY KEY 标记：在类型后添加 "PRIMARY KEY"
+  # - NOT NULL 标记：在类型后添加 "NOT NULL"
+  # - 复合主键：多个列标记 PRIMARY KEY 即可
+  table_schemas:
+    episode:
+      episode_id: "TEXT PRIMARY KEY"
+      taskid: "TEXT"
+      model: "TEXT"
+      sn: "TEXT"
+      collected_at: "TEXT"
+      filename: "TEXT"
+    
+    field:
+      field_id: "BIGINT PRIMARY KEY"
+      field: "TEXT NOT NULL"
+      rule_code: "TEXT"
+      type: "TEXT"
+    
+    field_value:
+      episode_id: "TEXT PRIMARY KEY"
+      field_id: "BIGINT PRIMARY KEY"
+      value: "TEXT"
+    
+    thresholds_base:
+      field: "TEXT PRIMARY KEY"
+      min: "TEXT"
+      max: "TEXT"
+      pass_count: "BIGINT"
+      fail_count: "BIGINT"
+      pass_rate: "DOUBLE PRECISION"
+    
+    thresholds_full:
+      field: "TEXT PRIMARY KEY"
+      min: "TEXT"
+      max: "TEXT"
+      pass_count: "BIGINT"
+      fail_count: "BIGINT"
+      pass_rate: "DOUBLE PRECISION"
 
 # ==============================================================================
 # Step: pack_csv（负责：把 ranges.csv 转成 ranges.txt）
