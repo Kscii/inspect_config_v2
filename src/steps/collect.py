@@ -270,6 +270,15 @@ def _format_filename(path: Path, model_root: Path, mode: str) -> str:
     return path.name
 
 
+def _extract_episode_id(filename: str) -> str:
+    """从文件名中提取 episode_id，文件名格式为 episodeid_collect.json"""
+    if filename.endswith("_collect.json"):
+        return filename[:-13]
+    if filename.endswith(".json"):
+        return filename[:-5]
+    return filename
+
+
 def _is_empty_value(v: Any) -> bool:
     if v is None:
         return True
@@ -390,13 +399,15 @@ def run_step(
             with out_csv.open("w", encoding=csv_encoding, newline="") as f:
                 w = csv.writer(f)
                 if csv_write_header:
-                    w.writerow(["file"] + kept_raw)
+                    w.writerow(["episode_id"] + kept_raw)
 
                 buf: List[List[str]] = []
                 for jf in json_files:
                     try:
                         data = _load_json(jf)
-                        row = [_format_filename(jf, model_root, filename_in_csv)]
+                        filename = _format_filename(jf, model_root, filename_in_csv)
+                        episode_id = _extract_episode_id(filename)
+                        row = [episode_id]
                         for ps in parsed:
                             v = _eval_parsed_selector(data, ps, strict=strict_mode)
                             row.append(_to_cell(v))
@@ -425,7 +436,7 @@ def run_step(
             with out_csv.open("w", encoding=csv_encoding, newline="") as f:
                 w = csv.writer(f)
                 if csv_write_header:
-                    w.writerow(["file", "value"])
+                    w.writerow(["episode_id", "value"])
 
                 buf: List[List[str]] = []
                 for jf in json_files:
@@ -434,7 +445,9 @@ def run_step(
                         v = _eval_parsed_selector(data, ps, strict=strict_mode)
                         if remove_all_empty_fields and _is_empty_value(v):
                             continue
-                        buf.append([_format_filename(jf, model_root, filename_in_csv), _to_cell(v)])
+                        filename = _format_filename(jf, model_root, filename_in_csv)
+                        episode_id = _extract_episode_id(filename)
+                        buf.append([episode_id, _to_cell(v)])
 
                         if len(buf) >= batch_rows:
                             w.writerows(buf)

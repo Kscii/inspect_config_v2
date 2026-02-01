@@ -192,6 +192,12 @@ def _merge_step_result_into_runtime(step_name: str, result: Any, runtime: Dict[s
     elif step_name == "generate_info":
         runtime["model_to_info_csv"] = {k: Path(v) for k, v in d.get("model_to_info_csv", {}).items()}
 
+    elif step_name == "generate_db_csv":
+        runtime["model_to_db_dir"] = {k: Path(v) for k, v in d.get("model_to_db_dir", {}).items()}
+
+    elif step_name == "import_db":
+        runtime["imported_models"] = list(d.get("imported_models", []))
+
     elif step_name == "pack_csv":
         runtime["model_to_ranges_txt"] = {k: Path(v) for k, v in d.get("model_to_ranges_txt", {}).items()}
 

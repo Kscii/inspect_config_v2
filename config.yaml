@@ -23,7 +23,8 @@ global:
     - find_range
     - find_range_full
     - test_range
-    - generate_info
+    - generate_db_csv
+    - import_db
     - pack_csv
     - build_sql
     - update_rule_obs  
@@ -534,27 +535,55 @@ test_range:
 
 
 # ==============================================================================
-# Step: generate_info（负责：从 JSON 提取元数据信息，生成 info.csv）
+# Step: generate_db_csv（负责：生成用于导入 PostgreSQL 的 5 个 CSV 文件）
 # ==============================================================================
-generate_info:
+generate_db_csv:
   # JSON 文件后缀过滤
   json_suffix: "_collect.json"
 
   # CSV 编码
   csv_encoding: "utf-8-sig"
 
+  # 数据库 CSV 输出目录名
+  db_dirname: "db"
+
   # 字段缺失时的默认值
   default_value: "N/A"
 
-  # 额外列配置（可选）
-  # extra_columns:
-  #   - column_name: "joint_action_name"  # CSV 列名
-  #     selector: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<data_info>.<joint_info>.<action/robot>.<name>"
-  #     models: ["COBOTMAGICV2.0", "GR2"]  # 可选，为空或省略则应用到所有构型
-  #   - column_name: "manufacturer"
-  #     selector: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<equipment_info>.<manufacturer>"
-  #     # models 未指定 = 应用到所有构型
-  extra_columns: []
+  # 元数据提取配置（使用 selector 语法）
+  metadata_selectors:
+    sn: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<equipment_info>.<sn>"
+    collected_at: ".<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<collected_at>"
+
+
+# ==============================================================================
+# Step: import_db（负责：将 CSV 导入到 PostgreSQL 数据库）
+# ==============================================================================
+import_db:
+  # 数据库连接配置
+  host: "localhost"
+  port: 5432
+  database: "inspectdb"
+  user: "inspect"
+  password: "inspect_pw"
+
+  # 导入策略
+  truncate_before_import: true  # 每次导入前清空表
+  
+  # schema 命名规则（支持 {model} 和 {model_lower} 占位符）
+  schema_name_template: "{model_lower}"
+  
+  # 是否创建表（如果不存在）
+  create_tables_if_missing: true
+  
+  # 是否导入 thresholds_full
+  enable_full: true
+  
+  # db CSV 目录名
+  db_dirname: "db"
+  
+  # 是否演练
+  dry_run: false
 
 
 # ==============================================================================

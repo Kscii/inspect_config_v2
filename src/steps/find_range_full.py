@@ -170,7 +170,7 @@ def run_step(
             _log(logger, log_mode, f"[find_range_full] model={model} values.csv 为空 -> 跳过")
             continue
 
-        fields = [c for c in vdf.columns if c != "file"]
+        fields = [c for c in vdf.columns if c != "episode_id"]
         rows: List[Dict[str, Any]] = []
 
         conflicts: List[str] = []
