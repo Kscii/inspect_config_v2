@@ -14,4 +14,5 @@ dependencies = [
     "dash-bootstrap-components>=1.5.0",
     "plotly>=5.18.0",
     "kaleido>=0.2.1",
+    "psycopg2>=2.9.11",
 ]
