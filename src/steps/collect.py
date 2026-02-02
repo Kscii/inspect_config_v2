@@ -318,7 +318,15 @@ def run_step(
     logger = runtime.get("logger")
     obs_download_root: Path = runtime["obs_download_root"]
     models: List[str] = runtime["models"]
-    model_to_selectors_txt: Dict[str, Path] = runtime["model_to_selectors_txt"]
+    model_to_selectors_txt: Dict[str, Path] = runtime.get("model_to_selectors_txt")
+    if model_to_selectors_txt is None:
+        model_to_selectors_txt = {}
+        for m in models:
+            candidate = repo_root / "csv_output" / m / f"{m}_selectors.txt"
+            if candidate.exists():
+                model_to_selectors_txt[m] = candidate
+        if model_to_selectors_txt:
+            _log(logger, f"[collect] bootstrap model_to_selectors_txt from csv_output for {len(model_to_selectors_txt)} models")
 
     csv_output_dir = repo_root / "csv_output"
     csv_output_dir.mkdir(parents=True, exist_ok=True)
