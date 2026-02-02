@@ -130,27 +130,57 @@ class DatabaseManager:
         
         return self.execute_query(query, tuple(params) if params else None)
     
-    def get_thresholds(self, model: str, field: str) -> Optional[Dict[str, float]]:
-        """获取字段的阈值（min, max）"""
+    def get_thresholds(self, model: str, field: str) -> Optional[Dict[str, Dict[str, float]]]:
+        """获取字段的阈值（base 和 full 的 min, max）"""
         schema = qident(model)
-        query = f"""
+        
+        result = {}
+        
+        # 获取 base 阈值
+        query_base = f"""
         SELECT min, max
         FROM {schema}.thresholds_base
         WHERE field = %s
         """
-        df = self.execute_query(query, (field,))
+        df_base = self.execute_query(query_base, (field,))
         
-        if df.empty:
+        if not df_base.empty:
+            row = df_base.iloc[0]
+            try:
+                result["base"] = {
+                    "min": float(row["min"]) if pd.notna(row["min"]) else None,
+                    "max": float(row["max"]) if pd.notna(row["max"]) else None,
+                }
+            except (ValueError, TypeError):
+                result["base"] = None
+        else:
+            result["base"] = None
+        
+        # 获取 full 阈值
+        query_full = f"""
+        SELECT min, max
+        FROM {schema}.thresholds_full
+        WHERE field = %s
+        """
+        df_full = self.execute_query(query_full, (field,))
+        
+        if not df_full.empty:
+            row = df_full.iloc[0]
+            try:
+                result["full"] = {
+                    "min": float(row["min"]) if pd.notna(row["min"]) else None,
+                    "max": float(row["max"]) if pd.notna(row["max"]) else None,
+                }
+            except (ValueError, TypeError):
+                result["full"] = None
+        else:
+            result["full"] = None
+        
+        # 如果两组阈值都为空，返回 None
+        if result["base"] is None and result["full"] is None:
             return None
         
-        row = df.iloc[0]
-        try:
-            return {
-                "min": float(row["min"]) if pd.notna(row["min"]) else None,
-                "max": float(row["max"]) if pd.notna(row["max"]) else None,
-            }
-        except (ValueError, TypeError):
-            return None
+        return result
     
     def get_field_name(self, model: str, field_id: int) -> str:
         """根据 field_id 获取 field 名称"""
