@@ -41,7 +41,7 @@ def create_scatter_plot(df: pd.DataFrame, field_info_list: List[Dict[str, Any]],
         
         # 确保 collected_at 是 datetime 类型
         if not pd.api.types.is_datetime64_any_dtype(field_df["collected_at"]):
-            field_df["collected_at"] = pd.to_datetime(field_df["collected_at"])
+            field_df["collected_at"] = pd.to_datetime(field_df["collected_at"], utc=True)
         
         # 根据排序方式进行排序
         if sort_by == "sn":
@@ -63,16 +63,25 @@ def create_scatter_plot(df: pd.DataFrame, field_info_list: List[Dict[str, Any]],
             unique_groups = field_df["taskid"].unique()
         elif group_by == "day":
             # 按日分类
+            # 再次确保 collected_at 是 datetime 类型（防止 sort_values 后类型降级）
+            if not pd.api.types.is_datetime64_any_dtype(field_df["collected_at"]):
+                field_df["collected_at"] = pd.to_datetime(field_df["collected_at"], utc=True)
             field_df["group_label"] = field_df["collected_at"].dt.strftime("%Y-%m-%d")
             group_key = "group_label"
             unique_groups = field_df["group_label"].unique()
         elif group_by == "week":
             # 按周分类（ISO周格式：YYYY-Www）
+            # 再次确保 collected_at 是 datetime 类型（防止 sort_values 后类型降级）
+            if not pd.api.types.is_datetime64_any_dtype(field_df["collected_at"]):
+                field_df["collected_at"] = pd.to_datetime(field_df["collected_at"], utc=True)
             field_df["group_label"] = field_df["collected_at"].dt.strftime("%Y-W%W")
             group_key = "group_label"
             unique_groups = field_df["group_label"].unique()
         elif group_by == "month":
             # 按月分类
+            # 再次确保 collected_at 是 datetime 类型（防止 sort_values 后类型降级）
+            if not pd.api.types.is_datetime64_any_dtype(field_df["collected_at"]):
+                field_df["collected_at"] = pd.to_datetime(field_df["collected_at"], utc=True)
             field_df["group_label"] = field_df["collected_at"].dt.strftime("%Y-%m")
             group_key = "group_label"
             unique_groups = field_df["group_label"].unique()
@@ -121,29 +130,59 @@ def create_scatter_plot(df: pd.DataFrame, field_info_list: List[Dict[str, Any]],
         if thresholds:
             x_range = [field_df["episode_index"].min(), field_df["episode_index"].max()]
             
-            if thresholds.get("min") is not None:
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_range,
-                        y=[thresholds["min"], thresholds["min"]],
-                        mode="lines",
-                        name="Min Threshold",
-                        line=dict(color="red", dash="dash", width=2),
-                        showlegend=True,
+            # Base 阈值线
+            if thresholds.get("base"):
+                base_thresholds = thresholds["base"]
+                if base_thresholds.get("min") is not None:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_range,
+                            y=[base_thresholds["min"], base_thresholds["min"]],
+                            mode="lines",
+                            name="Base Min",
+                            line=dict(color="red", dash="dash", width=2),
+                            showlegend=True,
+                        )
                     )
-                )
+                
+                if base_thresholds.get("max") is not None:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_range,
+                            y=[base_thresholds["max"], base_thresholds["max"]],
+                            mode="lines",
+                            name="Base Max",
+                            line=dict(color="red", dash="dot", width=2),
+                            showlegend=True,
+                        )
+                    )
             
-            if thresholds.get("max") is not None:
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_range,
-                        y=[thresholds["max"], thresholds["max"]],
-                        mode="lines",
-                        name="Max Threshold",
-                        line=dict(color="orange", dash="dash", width=2),
-                        showlegend=True,
+            # Full 阈值线
+            if thresholds.get("full"):
+                full_thresholds = thresholds["full"]
+                if full_thresholds.get("min") is not None:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_range,
+                            y=[full_thresholds["min"], full_thresholds["min"]],
+                            mode="lines",
+                            name="Full Min",
+                            line=dict(color="orange", dash="dash", width=2),
+                            showlegend=True,
+                        )
                     )
-                )
+                
+                if full_thresholds.get("max") is not None:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_range,
+                            y=[full_thresholds["max"], full_thresholds["max"]],
+                            mode="lines",
+                            name="Full Max",
+                            line=dict(color="orange", dash="dot", width=2),
+                            showlegend=True,
+                        )
+                    )
     
     # 更新布局
     fig.update_layout(
@@ -198,12 +237,14 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
             std_val = sn_df["value"].std()
             count = len(sn_df)
             
-            # 计算通过率（如果有阈值）
+            # 计算通过率（如果有阈值，使用 base 阈值）
             pass_rate = None
-            if thresholds and thresholds.get("min") is not None and thresholds.get("max") is not None:
-                passed = sn_df[
-                    (sn_df["value"] >= thresholds["min"]) & (sn_df["value"] <= thresholds["max"])
-                ]
+            if thresholds and thresholds.get("base"):
+                base_thresholds = thresholds["base"]
+                if base_thresholds.get("min") is not None and base_thresholds.get("max") is not None:
+                    passed = sn_df[
+                        (sn_df["value"] >= base_thresholds["min"]) & (sn_df["value"] <= base_thresholds["max"])
+                    ]
                 pass_rate = len(passed) / count * 100 if count > 0 else 0
             
             sn_stats.append(
