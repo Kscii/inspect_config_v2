@@ -265,7 +265,7 @@ def update_selected_info_display(selected_fields, episode_data, current_model):
                 # 获取episode详细信息
                 schema = qident(current_model)
                 query = f"""
-                SELECT episode_id, taskid, model, sn, collected_at, filename
+                SELECT episode_id, taskid, model, area, sn, collected_at, filename
                 FROM {schema}.episode
                 WHERE episode_id = %s
                 """
@@ -277,6 +277,7 @@ def update_selected_info_display(selected_fields, episode_data, current_model):
                         html.Div([html.Strong("Episode ID: "), html.Span(str(episode_info["episode_id"]))], className="mb-1"),
                         html.Div([html.Strong("SN: "), html.Span(str(episode_info["sn"]))], className="mb-1"),
                         html.Div([html.Strong("TaskID: "), html.Span(str(episode_info["taskid"]))], className="mb-1"),
+                        html.Div([html.Strong("采集地点: "), html.Span(str(episode_info.get("area", "N/A")))], className="mb-1"),
                         html.Div([html.Strong("采集时间: "), html.Span(str(episode_info["collected_at"]))], className="mb-1"),
                         html.Div([html.Strong("文件名: "), html.Span(str(episode_info["filename"]))], className="mb-1"),
                     ])
@@ -304,6 +305,7 @@ def update_selected_info_display(selected_fields, episode_data, current_model):
             html.Div([html.Strong("Episode ID: "), html.Span("")], className="mb-1"),
             html.Div([html.Strong("SN: "), html.Span("")], className="mb-1"),
             html.Div([html.Strong("TaskID: "), html.Span("")], className="mb-1"),
+            html.Div([html.Strong("采集地点: "), html.Span("")], className="mb-1"),
             html.Div([html.Strong("采集时间: "), html.Span("")], className="mb-1"),
             html.Div([html.Strong("文件名: "), html.Span("")], className="mb-1"),
         ])
