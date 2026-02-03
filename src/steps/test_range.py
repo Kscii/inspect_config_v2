@@ -71,6 +71,12 @@ def run_step(
         max_fail_details = 0
     max_fail_details = int(max_fail_details)
 
+    # Episode 通过率配置
+    enable_episode_passrate: bool = bool(step_cfg.get("enable_episode_passrate", False))
+    episode_passrate_filename: str = str(step_cfg.get("episode_passrate_filename", "{model}_episode_passrate.csv"))
+    show_top_failed_episodes: bool = bool(step_cfg.get("show_top_failed_episodes", True))
+    top_n_failed_episodes: int = int(step_cfg.get("top_n_failed_episodes", 10))
+
     out_base: Dict[str, Path] = {}
     out_full: Dict[str, Path] = {}
 
@@ -93,6 +99,10 @@ def run_step(
         top_n_fields=top_n_fields,
         show_fail_details=show_fail_details,
         max_fail_details=max_fail_details,
+        enable_episode_passrate=enable_episode_passrate,
+        episode_passrate_filename=episode_passrate_filename,
+        show_top_failed_episodes=show_top_failed_episodes,
+        top_n_failed_episodes=top_n_failed_episodes,
     )
 
     # 跑 full
@@ -115,6 +125,10 @@ def run_step(
             top_n_fields=top_n_fields,
             show_fail_details=show_fail_details,
             max_fail_details=max_fail_details,
+            enable_episode_passrate=enable_episode_passrate,
+            episode_passrate_filename=episode_passrate_filename,
+            show_top_failed_episodes=show_top_failed_episodes,
+            top_n_failed_episodes=top_n_failed_episodes,
         )
 
     return TestRangeResult(model_to_ranges_csv=out_base, model_to_ranges_full_csv=out_full)
@@ -138,6 +152,10 @@ def _run_one_variant(
     top_n_fields: int,
     show_fail_details: bool,
     max_fail_details: int,
+    enable_episode_passrate: bool,
+    episode_passrate_filename: str,
+    show_top_failed_episodes: bool,
+    top_n_failed_episodes: int,
 ) -> Dict[str, Path]:
     out_map: Dict[str, Path] = {}
 
@@ -336,7 +354,167 @@ def _run_one_variant(
 
         _log(logger, log_mode, f"[test_range:{variant}] model={model} 写回 ranges -> {out_csv}")
 
+        # 计算构型总通过率（每个 json 所有字段都符合才算通过）
+        model_pass_count = 0
+        model_total_count = len(vdf)
+        
+        for idx in vdf.index:
+            episode_pass = True  # 假设该 episode 通过
+            
+            for f in fields:
+                if f not in ranges_map:
+                    if missing_range_is_fail:
+                        episode_pass = False
+                        break
+                    else:
+                        continue
+                
+                mn, mx, non_numeric = ranges_map[f]
+                
+                # 字段不在 values 中
+                if f not in vdf.columns:
+                    if missing_value_col_is_fail:
+                        episode_pass = False
+                        break
+                    else:
+                        continue
+                
+                value = vdf.loc[idx, f]
+                
+                # 非数值字段检测
+                if non_numeric or (str(mn) == "true" and str(mx) == "true"):
+                    if pd.isna(value) or str(value).strip() == "" or str(value).lower() == "nan":
+                        episode_pass = False
+                        break
+                    continue
+                
+                # 数值字段检测
+                try:
+                    mn_f = float(str(mn).strip())
+                    mx_f = float(str(mx).strip())
+                except Exception:
+                    episode_pass = False
+                    break
+                
+                numeric_value = pd.to_numeric(value, errors="coerce")
+                
+                if treat_nan_as_fail:
+                    if pd.isna(numeric_value) or not (mn_f <= numeric_value <= mx_f):
+                        episode_pass = False
+                        break
+                else:
+                    # NaN 不算失败，但超出范围算失败
+                    if pd.notna(numeric_value) and not (mn_f <= numeric_value <= mx_f):
+                        episode_pass = False
+                        break
+            
+            if episode_pass:
+                model_pass_count += 1
+        
+        model_pass_rate = model_pass_count / model_total_count if model_total_count > 0 else 0.0
+        _log(logger, log_mode, f"[test_range:{variant}] ========================================")
+        _log(logger, log_mode, f"[test_range:{variant}] 构型 {model} 总通过率: {model_pass_rate:.4f} ({model_pass_count}/{model_total_count})")
+        _log(logger, log_mode, f"[test_range:{variant}] ========================================")
+
+        # Episode 通过率统计
+        if enable_episode_passrate:
+            episode_stats = _calculate_episode_passrate(
+                vdf=vdf,
+                ranges_map=ranges_map,
+                fields=fields,
+                treat_nan_as_fail=treat_nan_as_fail,
+            )
+            
+            if episode_stats:
+                # 输出 CSV
+                ep_csv_name = episode_passrate_filename.format(model=model)
+                ep_csv = out_csv.parent / ep_csv_name
+                ep_df = pd.DataFrame(episode_stats, columns=["file", "total_fields", "pass_fields", "fail_fields", "pass_rate"])
+                ep_df.to_csv(ep_csv, index=False, encoding="utf-8-sig")
+                _log(logger, log_mode, f"[test_range:{variant}] model={model} episode passrate -> {ep_csv}")
+                
+                # 打印 TopN 失败 episodes
+                if show_top_failed_episodes:
+                    # 按 fail_fields 降序排序
+                    sorted_stats = sorted(episode_stats, key=lambda x: (x[3], -x[4]), reverse=True)
+                    top_failed = sorted_stats[:top_n_failed_episodes]
+                    _log(logger, log_mode, f"[test_range:{variant}] model={model} Top{top_n_failed_episodes} failed episodes:")
+                    for file_name, total, passed, failed, rate in top_failed:
+                        _log(logger, log_mode, f"  - {file_name}: total={total} pass={passed} fail={failed} pass_rate={rate:.4f}")
+
     return out_map
+
+
+def _calculate_episode_passrate(
+    vdf: pd.DataFrame,
+    ranges_map: Dict[str, Tuple[Any, Any, bool]],
+    fields: List[str],
+    treat_nan_as_fail: bool,
+) -> List[Tuple[str, int, int, int, float]]:
+    """
+    计算每条 episode 的总体通过率
+    返回：[(file, total_fields, pass_fields, fail_fields, pass_rate), ...]
+    """
+    if vdf.empty:
+        return []
+    
+    episode_stats = []
+    file_col = "file" if "file" in vdf.columns else None
+    
+    for idx in vdf.index:
+        file_name = str(vdf.loc[idx, file_col]) if file_col else f"row_{idx}"
+        
+        total_fields = 0
+        pass_fields = 0
+        
+        for field in fields:
+            if field not in ranges_map:
+                continue
+            if field not in vdf.columns:
+                # 缺失字段算失败
+                total_fields += 1
+                continue
+            
+            mn, mx, non_numeric = ranges_map[field]
+            value = vdf.loc[idx, field]
+            
+            # 非数值字段检测
+            if non_numeric or (str(mn) == "true" and str(mx) == "true"):
+                # 检查非空
+                if pd.notna(value) and str(value).strip() != "" and str(value).lower() != "nan":
+                    pass_fields += 1
+                total_fields += 1
+                continue
+            
+            # 数值字段检测
+            try:
+                mn_f = float(str(mn).strip())
+                mx_f = float(str(mx).strip())
+            except Exception:
+                # 无法解析范围，算失败
+                total_fields += 1
+                continue
+            
+            numeric_value = pd.to_numeric(value, errors="coerce")
+            
+            if treat_nan_as_fail:
+                # NaN 算失败
+                if pd.notna(numeric_value) and mn_f <= numeric_value <= mx_f:
+                    pass_fields += 1
+                total_fields += 1
+            else:
+                # NaN 不计入统计
+                if pd.notna(numeric_value):
+                    if mn_f <= numeric_value <= mx_f:
+                        pass_fields += 1
+                    total_fields += 1
+        
+        fail_fields = total_fields - pass_fields
+        pass_rate = pass_fields / total_fields if total_fields > 0 else 0.0
+        
+        episode_stats.append((file_name, total_fields, pass_fields, fail_fields, pass_rate))
+    
+    return episode_stats
 
 
 def _to_float(v: Any) -> Optional[float]:
