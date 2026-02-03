@@ -4,11 +4,12 @@
 update_rule_api step
 职责：
 1) 从 config.yaml 读取 current_preset -> base_url
-2) 读取 access_token
+2) 根据 preset.region 读取对应 access token（shanghai_access_token / zhengzhou_access_token）
 3) 对 base 和 full 两套分别发送 PUT 请求（同一路径，不同 body 字段）
    - endpoint: /data-collector/rule/update
    - base: body = {"id": <rule_id>, "config": "<literal txt>"}          txt来自 {model}_ranges.txt
    - full: body = {"id": <rule_id>, "configFull": "<literal txt>"}      txt来自 {model}_ranges_full.txt
+4) 额外更新 csvPath / csvFullPath（读取 {model}_last_path.txt）
 """
 
 from __future__ import annotations
@@ -128,6 +129,20 @@ def _build_model_to_id_map(global_cfg: Dict[str, Any], preset: str) -> Dict[str,
     return model_to_id
 
 
+def _resolve_access_token(step_cfg: Dict[str, Any], preset_region: str) -> str:
+    """
+    根据 region 选择 token：
+      region=shanghai  -> step_cfg.shanghai_access_token
+      region=zhengzhou -> step_cfg.zhengzhou_access_token
+    """
+    region = (preset_region or "").strip().lower()
+    key = f"{region}_access_token"
+    token = str(step_cfg.get(key, "")).strip()
+    if not token:
+        raise ValueError(f"[update_rule_api] 缺少 token：请在 update_rule_api.{key} 填写 accesstoken")
+    return token
+
+
 def run_step(
     repo_root: Path,
     global_cfg: Dict[str, Any],
@@ -141,14 +156,22 @@ def run_step(
     models: List[str] = runtime["models"]
 
     presets = global_cfg["presets"]
-    current_preset: str = str(step_cfg.get("current_preset", "dev"))
-    base_url: str = str(presets[current_preset]["base_url"]).rstrip("/")
+    current_preset: str = str(step_cfg.get("current_preset", "shanghai_dev"))
 
-    # 从 global 读映射（dev/prod 各一套）
+    if current_preset not in presets:
+        raise KeyError(f"[update_rule_api] preset not found: {current_preset}")
+
+    preset = presets[current_preset] or {}
+    base_url: str = str(preset["base_url"]).rstrip("/")
+    region: str = str(preset.get("region", "")).strip().lower()
+    if not region:
+        raise ValueError(f"[update_rule_api] preset missing region: {current_preset}")
+
+    # 从 global 读映射（按 preset 名区分）
     model_to_rule_id = _build_model_to_id_map(global_cfg, current_preset)
 
     put_path: str = str(step_cfg.get("put_path", "/data-collector/rule/update"))
-    access_token: str = str(step_cfg.get("access_token", "")).strip()
+    access_token: str = _resolve_access_token(step_cfg, preset_region=region)
 
     dry_run: bool = bool(step_cfg.get("dry_run", False)) or bool(
         runtime.get("dry_run", global_cfg.get("dry_run", False))
@@ -161,10 +184,8 @@ def run_step(
     fail_if_id_missing: bool = bool(step_cfg.get("fail_if_id_missing", True))
     fail_if_txt_missing: bool = bool(step_cfg.get("fail_if_txt_missing", fail_if_id_missing))
 
-    if not access_token:
-        raise ValueError("[update_rule_api] access_token 为空（你要求写在配置文件中）")
-
     url = f"{base_url}{put_path}"
+    _log(logger, log_mode, f"[update_rule_api] preset={current_preset} region={region} url={url} enable_full={enable_full}")
 
     # base
     updated_base = _run_one_update(
@@ -186,7 +207,7 @@ def run_step(
         fail_if_txt_missing=fail_if_txt_missing,
     )
 
-    # full（S1：任一失败即终止）
+    # full（任一失败即终止）
     updated_full: List[str] = []
     if enable_full:
         updated_full = _run_one_update(
@@ -208,7 +229,7 @@ def run_step(
             fail_if_txt_missing=fail_if_txt_missing,
         )
 
-    # 新增：发送 csvPath 和 csvFullPath
+    # 发送 csvPath 和 csvFullPath
     _run_path_update(
         url=url,
         repo_root=repo_root,
@@ -271,7 +292,7 @@ def _run_one_update(
             _log(logger, log_mode, msg)
             continue
 
-        # 注意：pack_csv 输出是 literal 单字符串（可能包含 \\n），这里必须原样作为 config 发送
+        # pack_csv 输出是 literal 单字符串（可能包含 \\n），这里必须原样作为 config 发送
         config_text = txt_path.read_text(encoding="utf-8", errors="strict")
 
         body_obj = {"id": int(rule_id), payload_config_key: config_text}
@@ -328,8 +349,7 @@ def _http_put(
     req = urllib.request.Request(url=url, data=data, headers=headers, method="PUT")
 
     # NOTE: verify_tls=False 的完整关闭需要 SSLContext，这里保持最小依赖不实现。
-    #       你当前 verify_tls 默认 true，生产建议保持 true。
-    _ = verify_tls  # 保持参数占位，避免未使用告警（如你有 lint）
+    _ = verify_tls
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -347,7 +367,6 @@ def _http_put(
 
 
 def _log(logger, log_mode: str, msg: str) -> None:
-    # log_mode 目前不分支（保留接口，与你其他 step 对齐）
     _ = log_mode
     if logger is None:
         print(msg)
@@ -363,14 +382,14 @@ def _read_last_path(repo_root: Path, csv_output_dirname: str, model: str) -> Tup
     last_path_file = repo_root / csv_output_dirname / model / f"{model}_last_path.txt"
     if not last_path_file.exists():
         return None, None
-    
+
     try:
         content = last_path_file.read_text(encoding="utf-8").strip()
         lines = [line.strip() for line in content.split("\n") if line.strip()]
-        
+
         base_path = lines[0] if len(lines) >= 1 else None
         full_path = lines[1] if len(lines) >= 2 else None
-        
+
         return base_path, full_path
     except Exception:
         return None, None
@@ -411,7 +430,7 @@ def _run_path_update(
             continue
 
         base_path, full_path = _read_last_path(repo_root, csv_output_dirname, model)
-        
+
         if base_path is None:
             _log(logger, log_mode, f"[update_rule_api:path] model={model} 缺少 last_path.txt，跳过 csvPath 更新")
             continue

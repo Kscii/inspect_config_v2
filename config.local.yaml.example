@@ -33,16 +33,17 @@ global:
   # - true ：记录错误并继续（仅调试时可能用）
   continue_on_error: false
 
+  obsutilconfig_paths:
+    shanghai: /home/kscii/.obsutil_shanghai/.obsutilconfig_shanghai
+    zhengzhou: /home/kscii/.obsutil_zhengzhou/.obsutilconfig_zhengzhou
+
 
 # ==============================================================================
 # Step: download（负责：下载/搬运/合并/分组；并自动发现构型）
 # ==============================================================================
 download:
-  # 当前使用哪个预设（dev/prod）
-  # 说明：
-  # - bucket 从 global.presets.<preset>.obs_bucket 读取
-  # - 你也可以把 current_preset 固定为 prod，并且只改 global.presets 中的 bucket/url
-  current_preset: "dev"
+  # shanghai_dev/shanghai_prod/zhengzhou_prod
+  current_preset: "zhengzhou_prod"
 
   # OBS 前缀（末尾带 / 不带都行）
   obs_prefix: "data-collector-svc/collect/"
@@ -376,17 +377,19 @@ build_sql:
 # ==============================================================================
 update_rule_obs:
   # dev / prod（bucket 从 global.presets.<preset>.obs_bucket 取）
-  current_preset: "prod"
+  current_preset: "shanghai_dev"
 
 # ==============================================================================
 # Step: update_rule_api（负责：调用接口更新规则）
 # ==============================================================================
 update_rule_api:
   # 当前使用哪个预设（dev 或 prod）
-  current_preset: "prod"
+  current_preset: "shanghai_dev"
 
   # header 名：按你接口要求是 accesstoken
-  access_token: "eyJhbGciOiJSUzI1NiIsImtpZCI6ImRhdGEtY29sbGVjdG9yLWNlcnQiLCJ0eXAiOiJKV1QifQ.eyJvd25lciI6Imh1bWFub2lkLXJvYm90IiwibmFtZSI6ImZhbmd4dWVqaWFuIiwiY3JlYXRlZFRpbWUiOiIyMDI1LTEyLTEyVDA5OjM1OjAzKzA4OjAwIiwidXBkYXRlZFRpbWUiOiIyMDI2LTAxLTEzVDE4OjM5OjQxKzA4OjAwIiwiZGVsZXRlZFRpbWUiOiIiLCJpZCI6IjdhMDBhY2ZhLTFjZTEtNDYzZC04YjkxLTFiYzhhNTM5OWU1MSIsInR5cGUiOiJub3JtYWwtdXNlciIsInBhc3N3b3JkIjoiIiwicGFzc3dvcmRTYWx0IjoiIiwicGFzc3dvcmRUeXBlIjoiYXJnb24yaWQiLCJkaXNwbGF5TmFtZSI6IuaWueWtpua4kCIsImZpcnN0TmFtZSI6IiIsImxhc3ROYW1lIjoiIiwiYXZhdGFyIjoiaHR0cHM6Ly9jZG4uY2FzYmluLm9yZy9pbWcvY2FzYmluLnN2ZyIsImF2YXRhclR5cGUiOiIiLCJwZXJtYW5lbnRBdmF0YXIiOiIiLCJlbWFpbCI6IiIsImVtYWlsVmVyaWZpZWQiOmZhbHNlLCJwaG9uZSI6IjEzNTAxOTc4Njk4IiwiY291bnRyeUNvZGUiOiJDTiIsInJlZ2lvbiI6IiIsImxvY2F0aW9uIjoiIiwiYWRkcmVzcyI6W10sImFmZmlsaWF0aW9uIjoiIiwidGl0bGUiOiIiLCJpZENhcmRUeXBlIjoiIiwiaWRDYXJkIjoiIiwiaG9tZXBhZ2UiOiIiLCJiaW8iOiIiLCJsYW5ndWFnZSI6IiIsImdlbmRlciI6IiIsImJpcnRoZGF5IjoiIiwiZWR1Y2F0aW9uIjoiIiwic2NvcmUiOjAsImthcm1hIjowLCJyYW5raW5nIjoxMjgsImlzRGVmYXVsdEF2YXRhciI6ZmFsc2UsImlzT25saW5lIjpmYWxzZSwiaXNBZG1pbiI6ZmFsc2UsImlzRm9yYmlkZGVuIjpmYWxzZSwiaXNEZWxldGVkIjpmYWxzZSwic2lnbnVwQXBwbGljYXRpb24iOiJkYXRhLWNvbGxlY3RvciIsImhhc2giOiIiLCJwcmVIYXNoIjoiIiwiYWNjZXNzS2V5IjoiIiwiYWNjZXNzU2VjcmV0IjoiIiwiZ2l0aHViIjoiIiwiZ29vZ2xlIjoiIiwicXEiOiIiLCJ3ZWNoYXQiOiIiLCJmYWNlYm9vayI6IiIsImRpbmd0YWxrIjoiIiwid2VpYm8iOiIiLCJnaXRlZSI6IiIsImxpbmtlZGluIjoiIiwid2Vjb20iOiIiLCJsYXJrIjoiIiwiZ2l0bGFiIjoiIiwiY3JlYXRlZElwIjoiIiwibGFzdFNpZ25pblRpbWUiOiIiLCJsYXN0U2lnbmluSXAiOiIiLCJwcmVmZXJyZWRNZmFUeXBlIjoiIiwicmVjb3ZlcnlDb2RlcyI6bnVsbCwidG90cFNlY3JldCI6IiIsIm1mYVBob25lRW5hYmxlZCI6ZmFsc2UsIm1mYUVtYWlsRW5hYmxlZCI6ZmFsc2UsImxkYXAiOiIiLCJwcm9wZXJ0aWVzIjp7fSwicm9sZXMiOltdLCJwZXJtaXNzaW9ucyI6W10sImdyb3VwcyI6W10sImxhc3RTaWduaW5Xcm9uZ1RpbWUiOiIiLCJzaWduaW5Xcm9uZ1RpbWVzIjowLCJtYW5hZ2VkQWNjb3VudHMiOm51bGwsInRva2VuVHlwZSI6ImFjY2Vzcy10b2tlbiIsInRhZyI6IiIsInNjb3BlIjoiYWxsIiwiYXpwIjoiZDcxY2E1ZDk4YzQzZjRkMjJhMjAiLCJpc3MiOiJodHRwczovL3NpbmdsZS1zaWduLW9uLXNlcnZpY2UuZGF0YS1hcHBzLnN2Yy5jbHVzdGVyLmxvY2FsIiwic3ViIjoiN2EwMGFjZmEtMWNlMS00NjNkLThiOTEtMWJjOGE1Mzk5ZTUxIiwiYXVkIjpbImQ3MWNhNWQ5OGM0M2Y0ZDIyYTIwIl0sImV4cCI6MTc2OTc2MjY5MywibmJmIjoxNzY5NzUxODkzLCJpYXQiOjE3Njk3NTE4OTMsImp0aSI6ImFkbWluL2U1YWZhOTRmLTFmNWMtNDdlMi05ODk5LTRjODRlMDE4NjVkOCJ9.ne9-ucYefAD62Njv6kBJu3s4zC2Mr8afyetqadKklu6vJlrVIHoWdRh_4B0Ct6Hi_avhCQQDBOc80lyyIBaq7ud84BeHP5maUjfPiv3DmBQx-fMwhe9gzAyYxJfAE4wtmnTuoS0Ga9WwXQHJyhEQHJOaGJfFwKttIlNrMKd4Eoq6wOU5hnf3Wo3yAHh1ClHdYGR8kVH03svoC2caxp4_x44ggxjo43WBqbmNhyoGbrTPKOApKNu-x5ktaNqyL8fJfT69X4BEcrLBHp3dUcfrcHsDkkNqxqvYogNHWN20-WtVr8bn66uCp-iJ6h6ledkSiq7e14MBf5CNCyOmW2AnWZ8LOOSGWpR0_F4dpt-GxzNOIZKeQKpQHIR9BrcatNzCXx_m4sk-5PJUgMl4LUgAXdhFMTHlZGoF5JgDAPC2W5z767752nuoJ1hPLkUmyAQKpzCt7bJvJaYjGhUFuT5FPPoKxa2brw3BTwbWQcjuCCfgX9-7uJbKSkwKpcWRafT85jfvEHzCI18wD333aI36CtVL9rZkyRAQdzW9k2LEPjijaDpTtqgteuKDRZZttNIgGie_vZKIoaTiUx7W0pa3EtKq7CAFcvovjuoxZpbiRabNNGlyfR9l_soGkJ9OECuqNaUH6pTo2mBqv9HWwjN6FLIg4hLvXv_iuyyOHAKE3hE"
+  shanghai_access_token: "eyJhbGciOiJSUzI1NiIsImtpZCI6ImRhdGEtY29sbGVjdG9yLWNlcnRzIiwidHlwIjoiSldUIn0.eyJvd25lciI6ImRhdGEtY29sbGVjdG9yIiwibmFtZSI6ImZhbmd4dWVqaWFuIiwiY3JlYXRlZFRpbWUiOiIyMDI1LTEyLTMwVDA5OjE2OjQ2KzA4OjAwIiwidXBkYXRlZFRpbWUiOiIyMDI2LTAxLTE1VDE4OjMyOjI2KzA4OjAwIiwiZGVsZXRlZFRpbWUiOiIiLCJpZCI6ImQzNzkwNWIzLWExYzEtNDdlNS05NTZjLWUzZjFkZjI0MDAwNCIsInR5cGUiOiJub3JtYWwtdXNlciIsInBhc3N3b3JkIjoiIiwicGFzc3dvcmRTYWx0IjoiIiwicGFzc3dvcmRUeXBlIjoicGxhaW4iLCJkaXNwbGF5TmFtZSI6ImZhbmd4dWVqaWFuIiwiZmlyc3ROYW1lIjoiIiwibGFzdE5hbWUiOiIiLCJhdmF0YXIiOiJodHRwczovL2Nkbi5jYXNiaW4ub3JnL2ltZy9jYXNiaW4uc3ZnIiwiYXZhdGFyVHlwZSI6IiIsInBlcm1hbmVudEF2YXRhciI6IiIsImVtYWlsIjoiIiwiZW1haWxWZXJpZmllZCI6ZmFsc2UsInBob25lIjoiMTM1MDE5Nzg2OTgiLCJjb3VudHJ5Q29kZSI6IkNOIiwicmVnaW9uIjoiIiwibG9jYXRpb24iOiIiLCJhZGRyZXNzIjpbXSwiYWZmaWxpYXRpb24iOiIiLCJ0aXRsZSI6IiIsImlkQ2FyZFR5cGUiOiIiLCJpZENhcmQiOiIiLCJob21lcGFnZSI6IiIsImJpbyI6IiIsImxhbmd1YWdlIjoiIiwiZ2VuZGVyIjoiIiwiYmlydGhkYXkiOiIiLCJlZHVjYXRpb24iOiIiLCJzY29yZSI6MCwia2FybWEiOjAsInJhbmtpbmciOjEyNywiaXNEZWZhdWx0QXZhdGFyIjpmYWxzZSwiaXNPbmxpbmUiOmZhbHNlLCJpc0FkbWluIjpmYWxzZSwiaXNGb3JiaWRkZW4iOmZhbHNlLCJpc0RlbGV0ZWQiOmZhbHNlLCJzaWdudXBBcHBsaWNhdGlvbiI6ImRhdGEtY29sbGVjdG9yLWFwcGxpY2F0aW9uIiwiaGFzaCI6IiIsInByZUhhc2giOiIiLCJhY2Nlc3NLZXkiOiIiLCJhY2Nlc3NTZWNyZXQiOiIiLCJnaXRodWIiOiIiLCJnb29nbGUiOiIiLCJxcSI6IiIsIndlY2hhdCI6IiIsImZhY2Vib29rIjoiIiwiZGluZ3RhbGsiOiIiLCJ3ZWlibyI6IiIsImdpdGVlIjoiIiwibGlua2VkaW4iOiIiLCJ3ZWNvbSI6IiIsImxhcmsiOiIiLCJnaXRsYWIiOiIiLCJjcmVhdGVkSXAiOiIiLCJsYXN0U2lnbmluVGltZSI6IiIsImxhc3RTaWduaW5JcCI6IiIsInByZWZlcnJlZE1mYVR5cGUiOiIiLCJyZWNvdmVyeUNvZGVzIjpudWxsLCJ0b3RwU2VjcmV0IjoiIiwibWZhUGhvbmVFbmFibGVkIjpmYWxzZSwibWZhRW1haWxFbmFibGVkIjpmYWxzZSwibGRhcCI6IiIsInByb3BlcnRpZXMiOnt9LCJyb2xlcyI6W10sInBlcm1pc3Npb25zIjpbXSwiZ3JvdXBzIjpbXSwibGFzdFNpZ25pbldyb25nVGltZSI6IiIsInNpZ25pbldyb25nVGltZXMiOjAsIm1hbmFnZWRBY2NvdW50cyI6bnVsbCwidG9rZW5UeXBlIjoiYWNjZXNzLXRva2VuIiwidGFnIjoiIiwic2NvcGUiOiJwcm9maWxlIiwiYXpwIjoiOTUyNTliZTYwZDE5NjJhZDdkNTEiLCJpc3MiOiJodHRwczovL2Rldi1hdXRoLm9wZW5sb29uZy5vcmcuY24iLCJzdWIiOiJkMzc5MDViMy1hMWMxLTQ3ZTUtOTU2Yy1lM2YxZGYyNDAwMDQiLCJhdWQiOlsiOTUyNTliZTYwZDE5NjJhZDdkNTEiXSwiZXhwIjoxNzcwMDkxOTM1LCJuYmYiOjE3NzAwNzc1MzUsImlhdCI6MTc3MDA3NzUzNSwianRpIjoiYWRtaW4vZDdlZGZiZWYtMWE4Yy00MWQ1LTk0OWMtN2U3NzQ5OTc3MDhmIn0.gF95SXid-POqvkBhdBatx7Xkc6QofEI62WHF6LHUraJW8a4qREWbcWtlG44P7ZxnhYEwf_8GeC9u7Y2DIlYHDEtMTO3YApp08sbVofYiTz4mimAZ-JnXKE0MJVzCxAZK-9YSNIUia64GEylaqbNpfH0eUzGlIy0CRDDT5WcMwKfaGjDee1U_2WbBoOu99RxzfK1hdgR63tpQt_0RZNYas7iWIfR6u9_jjuaErK9bLB-QqGjv95GjfFDBeeihwJy6ODJ3VTOaMORnkyFh6qQlZzuHgG-6AdbkNY18l4X9GdAP1vQN77OTlvwAw1WTYr2uIGCOdcxiWKcd44A_LJ_wXsXjgVwWUmb--XhkHgbKx88oSeGvsw7wHJhPsM2Oaiy3BK8NampaFY4eqGfDxx6ooHoM79Bdqi6dOsAdCBtG7GK0OrInU36XWc6tFDAhgJSxPRKBxl5od4ze3Xk2UsocF9_kgnEYkuLt_UpM1ZwJrpnl44bjsovPSVdNq43frTyOJyw9_gC1foPiRRfcC-o_L9zuMKyLguDPJaZvp8k6d5zlQQv5Ay8zh0V-VB4BvTfhbgk6iFspRw9fcie58VQLCWPGVW5_Z65fXlCZLAczc9g7nlWAvfu2Xcti7nJEl-wUOmZe9ONvybreB5SSqvwOJ68S6rqNEX5cK-UbAq0eQmU"
+  zhengzhou_access_token: "PASTE_YOUR_ACCESS_TOKEN_HERE"
+
   dry_run: false
   verify_tls: false
   timeout_sec: 30

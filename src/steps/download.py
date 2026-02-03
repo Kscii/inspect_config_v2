@@ -9,10 +9,6 @@ download step
 4) 支持 skip_download / full_refresh / dry_run / 重试 / taskid 过滤等
 5) 支持 CSV 多前缀下载模式（可选）
 
-简化点（按你的要求）：
-- 非 CSV 模式（csv_mode=false）只考虑 obs_prefix = data-collector-svc/collect/ 的情况：
-  - collect_root 固定为 repo_root/collect（不再考虑 leaf 非 collect 的场景）
-- CSV 模式逻辑保持不变（仍可能下载到 repo_root/<leaf>，leaf 通常是 taskid）
 """
 
 from __future__ import annotations
@@ -27,7 +23,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -42,6 +38,10 @@ _MODEL_RE = re.compile(r'"model"\s*:\s*"([^"]+)"', re.IGNORECASE)
 _ROBOT_MODEL_RE = re.compile(r'"robotModel"\s*:\s*"([^"]+)"', re.IGNORECASE)
 
 
+# staging 根目录名（prod_all 用）
+_STAGE_DIRNAME = "_obs_stage"
+
+
 def run_step(
     repo_root: Path,
     global_cfg: Dict[str, Any],
@@ -54,11 +54,22 @@ def run_step(
     dry_run = bool(step_cfg.get("dry_run")) or global_dry_run
 
     # -------------------------
-    # 读取 presets / bucket
+    # 读取 presets / preset 选择
     # -------------------------
-    presets = global_cfg["presets"]
-    current_preset = step_cfg["current_preset"]
-    bucket = presets[current_preset]["obs_bucket"]
+    presets: Dict[str, Any] = global_cfg["presets"]
+    current_preset = str(step_cfg["current_preset"])
+
+    # prod_all：按顺序逐个 preset 下载
+    preset_list: List[str]
+    if current_preset == "prod_all":
+        preset_list = list(step_cfg.get("prod_all_presets") or [])
+        if not preset_list:
+            raise ValueError("[download] current_preset=prod_all but download.prod_all_presets is empty")
+    else:
+        preset_list = [current_preset]
+
+    # obsutil config 路径映射（按 region 取）
+    obsutilconfig_paths: Dict[str, str] = global_cfg.get("obsutilconfig_paths") or {}
 
     obs_prefix = str(step_cfg["obs_prefix"])
 
@@ -67,6 +78,9 @@ def run_step(
     # -------------------------
     obs_download_rootname = str(step_cfg.get("obs_download_rootname"))
     obs_download_root = repo_root / obs_download_rootname
+
+    # staging 根目录
+    stage_root = repo_root / _STAGE_DIRNAME
 
     # -------------------------
     # 下载/搬运相关配置
@@ -101,25 +115,25 @@ def run_step(
     # -------------------------
     # collect_root 规则（简化）
     # -------------------------
-    # 非 CSV：只考虑 data-collector-svc/collect/ 的情况，所以 collect_root 固定 repo_root/collect
-    # CSV：仍需要按 leaf(prefix) 推导可能的落盘目录（常见 leaf=taskid）
     collect_root = repo_root / "collect"
 
     _log(logger, log_mode, f"[download] resolved obs_download_root={obs_download_root}")
     _log(logger, log_mode, f"[download] resolved collect_root={collect_root} (csv_mode={csv_mode})")
     _log(logger, log_mode, f"[download] obs_prefix={obs_prefix}")
+    _log(logger, log_mode, f"[download] current_preset={current_preset} preset_list={preset_list}")
 
     # -------------------------
     # 0) full_refresh：只在一开始清理
     # -------------------------
     if full_refresh:
-        # 注意：CSV 模式下可能落盘到多个 leaf 目录，这里只清理：
-        # - obs_download_root（统一产物）
-        # - repo_root/collect（非 CSV/兼容）
-        _log(logger, log_mode, f"[download] full_refresh=True -> 清理 {collect_root} 和 {obs_download_root}")
+        # 注意：
+        # - CSV 模式下可能落盘到多个 leaf 目录，这里仍只清理最终产物与 collect
+        # - prod_all 会用 staging，为避免历史残留干扰，也清理 staging
+        _log(logger, log_mode, f"[download] full_refresh=True -> 清理 {collect_root}、{obs_download_root}、{stage_root}")
         if not dry_run:
             _rmtree_force(collect_root)
             _rmtree_force(obs_download_root)
+            _rmtree_force(stage_root)
 
     # -------------------------
     # 1) 计算要下载的 prefixes
@@ -154,60 +168,97 @@ def run_step(
     # -------------------------
     # 2) 下载（可选）
     # -------------------------
+    # 单 preset：保持原行为，dst=repo_root
+    # prod_all ：dst=repo_root/_obs_stage/<preset_name>，避免多个 bucket 混在 repo_root 互相覆盖
+    download_jobs: List[Tuple[str, str, str, Path]] = []
+    for preset_name in preset_list:
+        if preset_name not in presets:
+            raise KeyError(f"[download] preset not found in global.presets: {preset_name}")
+
+        preset = presets[preset_name] or {}
+        bucket = preset.get("obs_bucket")
+        region = preset.get("region")
+        if not bucket:
+            raise ValueError(f"[download] preset missing obs_bucket: {preset_name}")
+        if not region:
+            raise ValueError(f"[download] preset missing region: {preset_name}")
+
+        obs_cfg_path = obsutilconfig_paths.get(region)
+        if not obs_cfg_path:
+            raise ValueError(f"[download] missing global.obsutilconfig_paths for region={region} (preset={preset_name})")
+
+        # 目标目录
+        if current_preset == "prod_all":
+            dst_root = stage_root / preset_name
+        else:
+            dst_root = repo_root
+
+        download_jobs.append((preset_name, bucket, obs_cfg_path, dst_root))
+
     if not skip_download:
-        for pfx in prefixes_to_download:
-            _log(logger, log_mode, f"[download] OBS download: bucket={bucket}, prefix={pfx}, dst={repo_root}")
-            _obsutil_cp_prefix_to_repo_root(
-                obsutil_exe=obsutil_exe,
-                bucket=bucket,
-                obs_prefix=pfx,
-                repo_root=repo_root,
-                parallel=parallel,
-                jobs=jobs,
-                force=force,
-                dry_run=dry_run,
-                logger=logger,
-            )
+        for preset_name, bucket, obs_cfg_path, dst_root in download_jobs:
+            for pfx in prefixes_to_download:
+                _log(logger, log_mode, f"[download] OBS download: preset={preset_name} bucket={bucket} prefix={pfx} dst={dst_root} config={obs_cfg_path}")
+                _obsutil_cp_prefix(
+                    obsutil_exe=obsutil_exe,
+                    obsutil_config=obs_cfg_path,
+                    bucket=bucket,
+                    obs_prefix=pfx,
+                    dst_root=dst_root,
+                    parallel=parallel,
+                    jobs=jobs,
+                    force=force,
+                    dry_run=dry_run,
+                    logger=logger,
+                )
     else:
         _log(logger, log_mode, "[download] skip_download=True -> 跳过下载，仅做搬运/分组")
 
     # -------------------------
     # 3) 收集“来源目录”
     # -------------------------
-    sources: List[Path] = []
+    # sources 的语义：可能包含“容器目录”或“task_dir”
+    # prod_all：优先 sources 来自 staging
+    sources: List[Tuple[Path, Optional[str]]] = []
 
     # (a) obs_download 若存在，也作为来源（可能未分组）
     if obs_download_root.exists() and obs_download_root.is_dir():
-        sources.append(obs_download_root)
+        sources.append((obs_download_root, None))
 
-    # (b) 非 CSV：只需要考虑 repo_root/collect
-    if (not csv_mode) and collect_root.exists() and collect_root.is_dir():
-        if not obs_download_root.exists() or collect_root.resolve() != obs_download_root.resolve():
-            sources.append(collect_root)
+    if current_preset == "prod_all":
+        # staging：每个 preset 的 dst_root 作为来源
+        for preset_name, _bucket, _cfg, dst_root in download_jobs:
+            if dst_root.exists() and dst_root.is_dir():
+                sources.append((dst_root, preset_name))
+    else:
+        # (b) 非 CSV：只需要考虑 repo_root/collect
+        if (not csv_mode) and collect_root.exists() and collect_root.is_dir():
+            if not obs_download_root.exists() or collect_root.resolve() != obs_download_root.resolve():
+                sources.append((collect_root, None))
 
-    # (c) CSV：每个 prefix 的 leaf 落盘目录（如果存在）
-    if csv_mode:
-        for pfx in prefixes_to_download:
-            lf = _basename_of_prefix(pfx)
-            p = repo_root / lf
-            if p.exists() and p.is_dir():
-                try:
-                    if p.resolve() == obs_download_root.resolve():
-                        continue
-                except Exception:
-                    pass
-                try:
-                    if collect_root.exists() and p.resolve() == collect_root.resolve():
-                        continue
-                except Exception:
-                    pass
-                sources.append(p)
+        # (c) CSV：每个 prefix 的 leaf 落盘目录（如果存在）
+        if csv_mode:
+            for pfx in prefixes_to_download:
+                lf = _basename_of_prefix(pfx)
+                p = repo_root / lf
+                if p.exists() and p.is_dir():
+                    try:
+                        if p.resolve() == obs_download_root.resolve():
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        if collect_root.exists() and p.resolve() == collect_root.resolve():
+                            continue
+                    except Exception:
+                        pass
+                    sources.append((p, None))
 
     if not sources:
         raise FileNotFoundError(
             f"本地未找到可用数据目录：既没有 {obs_download_root}，"
-            f"{'也没有 ' + str(collect_root) if not csv_mode else ''}，"
-            f"也没有任何 CSV leaf 目录。 (skip_download={skip_download}, csv_mode={csv_mode})"
+            f"{'也没有 ' + str(collect_root) if (not csv_mode and current_preset != 'prod_all') else ''}，"
+            f"也没有 staging/CSV leaf 目录。 (skip_download={skip_download}, csv_mode={csv_mode}, current_preset={current_preset})"
         )
 
     if not dry_run:
@@ -218,19 +269,17 @@ def run_step(
     # -------------------------
     model_set: set[str] = set()
 
-    for src in sources:
+    for src, source_preset in sources:
         # 方法1：非 CSV 模式下，collect_root 一定是“容器目录”，禁止把它当作 task_dir 整体搬走
-        if (not csv_mode) and (src.resolve() == collect_root.resolve()):
+        if (current_preset != "prod_all") and (not csv_mode) and (src.resolve() == collect_root.resolve()):
             _log(logger, log_mode, f"[download] non-csv: treat collect_root as container only: {src}")
 
             task_dirs = _list_direct_task_dirs(src, taskid_re=taskid_re, filter_taskid_dirs=filter_taskid_dirs)
-
             if not task_dirs:
                 _log(logger, log_mode, f"[download] no direct taskid dirs found in collect_root: {src} (skip)")
                 continue
 
             _log(logger, log_mode, f"[download] found direct taskid dirs: {len(task_dirs)} in {src}")
-
             for task_dir in task_dirs:
                 moved_model = _move_one_taskdir_into_model(
                     task_dir=task_dir,
@@ -241,6 +290,7 @@ def run_step(
                     dry_run=dry_run,
                     logger=logger,
                     log_mode=log_mode,
+                    source_preset=source_preset,
                 )
                 if moved_model:
                     model_set.add(moved_model)
@@ -248,7 +298,7 @@ def run_step(
 
         # 情况1：src 本身就是一个 taskid 目录（常见于 CSV leaf）
         if _looks_like_task_dir(src, taskid_re=taskid_re):
-            _log(logger, log_mode, f"[download] source is a task_dir: {src}")
+            _log(logger, log_mode, f"[download] source is a task_dir: {src} (source_preset={source_preset})")
             moved_model = _move_one_taskdir_into_model(
                 task_dir=src,
                 obs_download_root=obs_download_root,
@@ -258,6 +308,7 @@ def run_step(
                 dry_run=dry_run,
                 logger=logger,
                 log_mode=log_mode,
+                source_preset=source_preset,
             )
             if moved_model:
                 model_set.add(moved_model)
@@ -280,7 +331,7 @@ def run_step(
                 _log(logger, log_mode, f"[download] no direct taskid dirs found in: {src} (skip)")
             continue
 
-        _log(logger, log_mode, f"[download] found direct taskid dirs: {len(task_dirs)} in {src}")
+        _log(logger, log_mode, f"[download] found direct taskid dirs: {len(task_dirs)} in {src} (source_preset={source_preset})")
 
         for task_dir in task_dirs:
             moved_model = _move_one_taskdir_into_model(
@@ -292,10 +343,10 @@ def run_step(
                 dry_run=dry_run,
                 logger=logger,
                 log_mode=log_mode,
+                source_preset=source_preset,
             )
             if moved_model:
                 model_set.add(moved_model)
-
 
     models = sorted(model_set)
     _log(logger, log_mode, f"[download] discovered models={models}")
@@ -317,6 +368,7 @@ def _move_one_taskdir_into_model(
     dry_run: bool,
     logger,
     log_mode: str,
+    source_preset: Optional[str],
 ) -> Optional[str]:
     taskid = task_dir.name
 
@@ -346,17 +398,25 @@ def _move_one_taskdir_into_model(
     except Exception:
         pass
 
+    # 冲突必须报错（你的要求）
     if dst.exists():
-        _log(logger, log_mode, f"[download] dst exists -> skip: {dst}")
-        return model
+        raise RuntimeError(
+            f"[download] CONFLICT: dst already exists, must abort. "
+            f"taskid={taskid} model={model} dst={dst} src={task_dir} source_preset={source_preset}"
+        )
 
-    _log(logger, log_mode, f"[download] MOVE task={taskid} -> {dst}")
+    _log(logger, log_mode, f"[download] MOVE task={taskid} model={model} -> {dst} (source_preset={source_preset})")
 
     if dry_run:
         return model
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     _move_dir_with_retry(src=task_dir, dst=dst, retries=move_retries, logger=logger, log_mode=log_mode, tag="task_to_model")
+
+    # 可选：落一个来源标记文件（你说没问题）
+    if source_preset:
+        _write_source_preset_marker(dst, source_preset=source_preset, logger=logger, log_mode=log_mode)
+
     return model
 
 
@@ -406,11 +466,12 @@ def _rmtree_force(p: Path) -> None:
         pass
 
 
-def _obsutil_cp_prefix_to_repo_root(
+def _obsutil_cp_prefix(
     obsutil_exe: Optional[str],
+    obsutil_config: str,
     bucket: str,
     obs_prefix: str,
-    repo_root: Path,
+    dst_root: Path,
     parallel: int,
     jobs: int,
     force: bool,
@@ -419,7 +480,7 @@ def _obsutil_cp_prefix_to_repo_root(
 ) -> None:
     exe = obsutil_exe or "obsutil"
     src = f"obs://{bucket}/{obs_prefix.lstrip('/')}"
-    dst = str(repo_root)
+    dst = str(dst_root)
 
     cmd = [
         exe,
@@ -431,6 +492,7 @@ def _obsutil_cp_prefix_to_repo_root(
         str(parallel),
         "-j",
         str(jobs),
+        f"-config={obsutil_config}",
     ]
     if force:
         cmd.append("-f")
@@ -442,9 +504,11 @@ def _obsutil_cp_prefix_to_repo_root(
             print("[download] DRY_RUN obsutil cmd:", " ".join(cmd))
         return
 
+    dst_root.mkdir(parents=True, exist_ok=True)
+
     proc = subprocess.run(cmd, check=False)
     if proc.returncode != 0:
-        raise RuntimeError(f"obsutil cp failed, returncode={proc.returncode}")
+        raise RuntimeError(f"obsutil cp failed, returncode={proc.returncode}, cmd={' '.join(cmd)}")
 
 
 def _looks_like_task_dir(p: Path, taskid_re: re.Pattern) -> bool:
@@ -643,3 +707,17 @@ def _read_csv_rows(
 
     _log(logger, log_mode, f"[download] csv rows loaded: {len(rows)} from {p}")
     return rows
+
+
+def _write_source_preset_marker(task_root: Path, source_preset: str, logger, log_mode: str) -> None:
+    """
+    在 obs_download/<model>/<taskid> 下写一个标记文件，方便排查来源。
+    这个文件不参与任何逻辑判断（download 阶段也不依赖它）。
+    """
+    try:
+        marker = task_root / ".source_preset.json"
+        data = {"preset": source_preset}
+        marker.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        _log(logger, log_mode, f"[download] wrote source preset marker: {marker}")
+    except Exception as e:
+        _log(logger, log_mode, f"[download] write source preset marker failed: task={task_root} err={e}")

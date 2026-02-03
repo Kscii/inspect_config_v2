@@ -16,3 +16,4 @@ temp.json
 config.local.yaml
 task_id.csv
 *.csv
+obs_download_old

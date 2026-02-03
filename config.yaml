@@ -14,6 +14,10 @@ version: 1
 # 全局配置（所有 step 可共享）
 # ==============================================================================
 global:
+  obsutilconfig_paths:
+    shanghai: /home/app-dev/.obsutilconfig_shanghai
+    zhengzhou: /home/app-dev/.obsutilconfig_zhengzhou
+
   # 全局环境预设（dev/prod 两套 URL/OBS 基本不需要改）
   # 说明：每个需要“环境差异”的 step 只需要配置自己的 current_preset（dev 或 prod）
   steps_to_run:
@@ -32,16 +36,23 @@ global:
     - update_rule_api
 
   presets:
-    dev:
-      # 开发环境 API 根地址
-      base_url: "https://dev-dojo-api.openloong.org.cn"
-      # 开发环境 OBS bucket
-      obs_bucket: "openloong-apps-dev-private"
-    prod:
-      # 生产环境 API 根地址（按你们实际地址填写/替换）
-      base_url: "https://dojo-api.openloong.org.cn"
-      # 生产环境 OBS bucket
-      obs_bucket: "openloong-apps-prod-private"
+    shanghai_prod:
+      env: prod
+      region: shanghai
+      base_url: https://dojo-api.openloong.org.cn
+      obs_bucket: openloong-apps-prod-private
+
+    shanghai_dev:
+      env: dev
+      region: shanghai
+      base_url: https://dev-dojo-api.openloong.org.cn
+      obs_bucket: openloong-apps-dev-private
+
+    zhengzhou_prod:
+      env: prod
+      region: zhengzhou
+      base_url: https://zz-dojo-api.openloong.org.cn
+      obs_bucket: openloong-zhengzhou-apps-private
 
   # 统一日志目录名（落在 repo 根目录下）
   log_dirname: "log"
@@ -63,7 +74,7 @@ global:
 
 
   rule_id_to_model_presets:
-    dev:
+    shanghai_dev:
       175: "A2"
       176: "A2D"
       177: "DWHEEL-TACTILE"
@@ -78,7 +89,8 @@ global:
       190: "QINGLOONGV2.5"
       191: "QINGLOONGV2.5-TACTILE"
       194: "BUTLERV3"
-    prod:
+      181: "青龙"
+    shanghai_prod:
       187: "BUTLERV3"
       188: "QINGLOONGV2.5-TACTILE"
       189: "QINGLOONGV2.5"
@@ -93,17 +105,35 @@ global:
       202: "DWHEEL-TACTILE"
       203: "A2D"
       204: "A2"
-
+    zhengzhou_dev:
+      148: "BUTLERV3"
+      149: "QINGLOONGV2.5-TACTILE"
+      150: "QINGLOONGV2.5"
+      151: "R1"
+      152: "PIKA"
+      153: "S1"
+      154: "KUAVO_4PRO_GRIPPER_DEXHAND"
+      155: "KUAVO_4PRO_LB_GRIPPER"
+      156: "KUAVO_4PRO_LB_GRIPPER_DEXHAND"
+      157: "KUAVO_4PRO_GRIPPER"
+      158: "COBOTMAGICV2.0"
+      159: "青龙"
+      160: "UR"
+      161: "GR2"
+      162: "FRANKA"
+      163: "DWHEEL-TACTILE"
+      164: "A2D"
+      165: "A2"
+        
 
 # ==============================================================================
 # Step: download（负责：下载/搬运/合并/分组；并自动发现构型）
 # ==============================================================================
 download:
-  # 当前使用哪个预设（dev/prod）
-  # 说明：
-  # - bucket 从 global.presets.<preset>.obs_bucket 读取
-  # - 你也可以把 current_preset 固定为 prod，并且只改 global.presets 中的 bucket/url
-  current_preset: "prod"
+  # 当前使用哪个预设（prod_all/shanghai_dev/shanghai_prod/zhengzhou_prod）
+  current_preset: "shanghai_dev"
+
+  prod_all_presets: [shanghai_prod, zhengzhou_prod]
 
   # OBS 前缀（末尾带 / 不带都行）
   obs_prefix: "data-collector-svc/collect/"
@@ -645,8 +675,8 @@ build_sql:
 # Step: update_rule_obs（负责：把 ranges.csv 上传到 OBS 固定路径，不覆盖）
 # ==============================================================================
 update_rule_obs:
-  # dev / prod（bucket 从 global.presets.<preset>.obs_bucket 取）
-  current_preset: "dev"
+  # shanghai_prod/shanghai_dev/zhengzhou_prod/zhengzhou_dev
+  current_preset: "shanghai_dev"
 
   # obsutil 可执行文件：null 表示用 PATH 中的 obsutil
   obsutil_exe: null
@@ -677,13 +707,14 @@ update_rule_obs:
 # Step: update_rule_api（负责：调用接口更新规则）
 # ==============================================================================
 update_rule_api:
-  # 当前使用哪个预设（dev 或 prod）
-  current_preset: "dev"
+  # shanghai_prod/shanghai_dev/zhengzhou_prod/zhengzhou_dev
+  current_preset: "shanghai_dev"
 
   put_path: "/data-collector/rule/update"
 
   # header 名：按你接口要求是 accesstoken
-  access_token: "PASTE_YOUR_ACCESS_TOKEN_HERE"
+  shanghai_access_token: "PASTE_YOUR_ACCESS_TOKEN_HERE"
+  zhengzhou_access_token: "PASTE_YOUR_ACCESS_TOKEN_HERE"
 
   dry_run: false
   verify_tls: true
