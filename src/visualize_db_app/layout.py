@@ -75,6 +75,7 @@ def create_layout():
                                                                     {"label": "按时间排序", "value": "time"},
                                                                     {"label": "按SN排序", "value": "sn"},
                                                                     {"label": "按TaskID排序", "value": "taskid"},
+                                                                    {"label": "按地区排序", "value": "area"},
                                                                 ],
                                                                 value="time",
                                                                 clearable=False,
@@ -90,6 +91,7 @@ def create_layout():
                                                                 options=[
                                                                     {"label": "按SN分类", "value": "sn"},
                                                                     {"label": "按TaskID分类", "value": "taskid"},
+                                                                    {"label": "按地区分类", "value": "area"},
                                                                     {"label": "按日分类", "value": "day"},
                                                                     {"label": "按周分类", "value": "week"},
                                                                     {"label": "按月分类", "value": "month"},

@@ -43,16 +43,36 @@ def create_scatter_plot(df: pd.DataFrame, field_info_list: List[Dict[str, Any]],
         if not pd.api.types.is_datetime64_any_dtype(field_df["collected_at"]):
             field_df["collected_at"] = pd.to_datetime(field_df["collected_at"], utc=True)
         
-        # 根据排序方式进行排序
+        # 构建排序键列表
+        sort_keys = []
+        
+        # 1. 添加用户选择的排序方式
         if sort_by == "sn":
-            # 按 SN 排序，然后按时间排序
-            field_df = field_df.sort_values(["sn", "collected_at"])
+            sort_keys.append("sn")
         elif sort_by == "taskid":
-            # 按 TaskID 排序，然后按时间排序
-            field_df = field_df.sort_values(["taskid", "collected_at"])
-        else:
-            # 按时间排序（默认）
-            field_df = field_df.sort_values("collected_at")
+            sort_keys.append("taskid")
+        elif sort_by == "area":
+            sort_keys.append("area")
+        elif sort_by == "time":
+            sort_keys.append("collected_at")
+        
+        # 2. 如果分类方式不是按时间分类，添加分类字段
+        time_based_groups = ["day", "week", "month"]
+        if group_by not in time_based_groups:
+            # 添加分类字段（如果不在排序键中）
+            if group_by == "sn" and "sn" not in sort_keys:
+                sort_keys.append("sn")
+            elif group_by == "taskid" and "taskid" not in sort_keys:
+                sort_keys.append("taskid")
+            elif group_by == "area" and "area" not in sort_keys:
+                sort_keys.append("area")
+        
+        # 3. 最后添加时间（如果不在排序键中）
+        if "collected_at" not in sort_keys:
+            sort_keys.append("collected_at")
+        
+        # 执行排序
+        field_df = field_df.sort_values(sort_keys)
         
         # 根据分类方式创建分组
         if group_by == "sn":
@@ -61,6 +81,9 @@ def create_scatter_plot(df: pd.DataFrame, field_info_list: List[Dict[str, Any]],
         elif group_by == "taskid":
             group_key = "taskid"
             unique_groups = field_df["taskid"].unique()
+        elif group_by == "area":
+            group_key = "area"
+            unique_groups = field_df["area"].unique()
         elif group_by == "day":
             # 按日分类
             # 再次确保 collected_at 是 datetime 类型（防止 sort_values 后类型降级）
@@ -105,6 +128,7 @@ def create_scatter_plot(df: pd.DataFrame, field_info_list: List[Dict[str, Any]],
                     f"Episode: {row['episode_id']}<br>"
                     f"SN: {row['sn']}<br>"
                     f"TaskID: {row.get('taskid', 'N/A')}<br>"
+                    f"Area: {row.get('area', 'N/A')}<br>"
                     f"Time: {row['collected_at']}<br>"
                     f"Value: {row['value']:.4f}"
                 )
