@@ -273,6 +273,28 @@ selectors:
     - models: ["A2D"]
       contains: ["waist"]
 
+    - models: ["QINGLOONGV2.5"]
+      contains: ["state/end>"]
+
+    - models: ["QINGLOONGV2.5"]
+      contains: ["action/end>"]
+
+    - models: ["S1"]
+      contains: ["b'"]
+
+    - models: ["PIKA"]
+      contains: [".<report>.[<ruleCode>=<joint_motion_interval>].<modelInfo>.<total_second_sum>"]
+    
+    - models: ["R1"]
+      contains: ["b'"]
+
+    - contains: [".[<name>=<force>]"]
+
+    - contains: ["/robot>]"]
+
+  
+
+
 
   # -------------------------
   # 执行顺序（可配置）
@@ -361,6 +383,9 @@ collect:
 # Step: find_range（负责：根据 values.csv 估计区间，输出 ranges.csv）
 # ==============================================================================
 find_range:
+  # 当前使用哪个预设（shanghai_dev/shanghai_prod/zhengzhou_prod）
+  current_preset: "shanghai_dev"
+
   method: "cover"          # "iqr" / "mad" / "cover"
   iqr_k: 1.5
   mad_z: 3.0
@@ -371,11 +396,22 @@ find_range:
   round_decimals: 6
   expand_pct: 1
 
-  # 默认：同号约束 -> 扩张 -> 字段约束
-  step_order: ["sign", "expand", "field"]
+  # 默认：同号约束 -> 扩张 -> 区域调整 -> 字段约束
+  step_order: ["sign", "expand", "region_adjust", "field"]
 
   sign_consistency_clamp: true
   post_expand_sign_clamp: true
+
+  # 区域差异化配置：是否启用区域调整
+  enable_region_adjust: true
+
+  # 放宽倍数配置（按 preset）
+  # - 1.0: 不放宽（上海）
+  # - 2.0: 区间宽度翻倍（郑州）
+  region_adjust_multipliers:
+    shanghai_dev: 1.0
+    shanghai_prod: 1.0
+    zhengzhou_prod: 2.0
 
   non_numeric_mark: "true"
 
@@ -482,6 +518,13 @@ find_range:
       min_hi: 35
       max_hi: 35
 
+    - models: ["PIKA"]
+      contains: ["cameras", ".<fps>"]
+      min_lo: 20
+      max_lo: 20
+      min_hi: 35
+      max_hi: 35
+
   field_rule_case_insensitive: true
   field_rule_model_case_insensitive: true
   apply_all_matching_rules: true
@@ -521,8 +564,11 @@ find_range_full:
     - contains: ["frame_align","delay_earliest_ms"]
       range: [0, 4000]
 
-    - contains: ["frame_count","fps"]
+    - contains: ["frame_count","cameras","fps"]
       range: [25, 35]
+    
+    - contains: ["frame_count","joints","fps"]
+      range: [80, 2000]
 
     - contains: ["frame_count","jitter_std_frames"]
       range: [0, 1]
@@ -642,7 +688,7 @@ import_db:
   create_tables_if_missing: true
   
   # 是否导入 thresholds_full
-  enable_full: true
+  enable_full: false
   
   # db CSV 目录名
   db_dirname: "db"
