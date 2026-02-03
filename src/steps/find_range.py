@@ -65,6 +65,16 @@ def run_step(
     field_rule_model_case_insensitive: bool = bool(step_cfg.get("field_rule_model_case_insensitive"))
     apply_all_matching_rules: bool = bool(step_cfg.get("apply_all_matching_rules"))
 
+    # 区域调整配置
+    enable_region_adjust: bool = bool(step_cfg.get("enable_region_adjust", False))
+    region_adjust_multipliers: Dict[str, float] = dict(step_cfg.get("region_adjust_multipliers", {}))
+    
+    # 获取当前 preset（从 find_range 自己的配置读取）
+    current_preset: str = str(step_cfg.get("current_preset", "shanghai_dev"))
+    
+    # 获取当前 preset 的放宽倍数（默认 1.0 不放宽）
+    region_multiplier: float = float(region_adjust_multipliers.get(current_preset, 1.0))
+
     out_map: Dict[str, Path] = {}
 
     for model in models:
@@ -145,6 +155,10 @@ def run_step(
                         hi = min(hi, max_obs)
                         if lo > hi:
                             hi = lo
+
+                elif step == "region_adjust":
+                    if enable_region_adjust and region_multiplier != 1.0:
+                        lo, hi = _apply_region_adjust(lo, hi, region_multiplier)
 
                 elif step == "field":
                     lo, hi = _apply_field_range_rules(
@@ -342,12 +356,43 @@ def _apply_post_expand_sign_clamp(lo: float, hi: float, s: pd.Series) -> Tuple[f
 
 
 def _validate_step_order(step_order: List[str]) -> List[str]:
-    allowed = {"sign", "expand", "field"}
+    allowed = {"sign", "expand", "region_adjust", "field"}
     order = list(step_order or [])
-    if set(order) != allowed or len(order) != 3:
+    if set(order) != allowed or len(order) != 4:
         raise ValueError(f"step_order must be a permutation of {sorted(allowed)}, got: {step_order}")
     return order
 
+def _apply_region_adjust(lo: float, hi: float, multiplier: float) -> Tuple[float, float]:
+    """
+    区域调整：根据 preset 放宽区间
+    - 使用中心扩展算法：区间宽度 * multiplier
+    - 例如 multiplier=2.0 时，区间宽度翻倍（郑州）
+    - multiplier=1.0 时，保持不变（上海）
+    - 如果区间宽度为 0（lo == hi），保持原样
+    """
+    lo = float(lo)
+    hi = float(hi)
+    multiplier = float(multiplier)
+
+    if not np.isfinite(multiplier) or multiplier <= 0.0:
+        return lo, hi
+
+    if multiplier == 1.0:
+        return lo, hi
+
+    w = hi - lo
+    
+    # 宽度为 0 时保持原样
+    if w == 0.0 or not np.isfinite(w):
+        return lo, hi
+
+    # 中心扩展算法
+    center = (lo + hi) / 2.0
+    new_w = w * multiplier
+    lo_new = center - new_w / 2.0
+    hi_new = center + new_w / 2.0
+
+    return float(lo_new), float(hi_new)
 
 # ----------------------------
 # 字段规则匹配语义
