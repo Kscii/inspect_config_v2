@@ -248,7 +248,7 @@ def _eval_parsed_selector(data: Any, ps: ParsedSelector, strict: bool = False) -
 def _iter_json_files(root_dir: Path, suffix: str = ".json") -> List[Path]:
     if root_dir.is_file():
         return [root_dir] if root_dir.name.endswith(suffix) else []
-    files = [p for p in root_dir.rglob(f"*{suffix}") if p.is_file()]
+    files = [p for p in root_dir.rglob(f"*{suffix}") if p.is_file() and p.name != ".source_preset.json"]
     files.sort()
     return files
 

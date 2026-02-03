@@ -153,6 +153,7 @@ def run_step(
     log_mode = runtime.get("log_mode", global_cfg.get("log_mode", "normal"))
 
     enable_full: bool = bool(step_cfg.get("enable_full", True))
+    only_update_base_config: bool = bool(step_cfg.get("only_update_base_config", False))
     models: List[str] = runtime["models"]
 
     presets = global_cfg["presets"]
@@ -185,7 +186,7 @@ def run_step(
     fail_if_txt_missing: bool = bool(step_cfg.get("fail_if_txt_missing", fail_if_id_missing))
 
     url = f"{base_url}{put_path}"
-    _log(logger, log_mode, f"[update_rule_api] preset={current_preset} region={region} url={url} enable_full={enable_full}")
+    _log(logger, log_mode, f"[update_rule_api] preset={current_preset} region={region} url={url} enable_full={enable_full} only_base={only_update_base_config}")
 
     # base
     updated_base = _run_one_update(
@@ -209,7 +210,7 @@ def run_step(
 
     # full（任一失败即终止）
     updated_full: List[str] = []
-    if enable_full:
+    if enable_full and not only_update_base_config:
         updated_full = _run_one_update(
             variant="full",
             url=url,
@@ -230,21 +231,24 @@ def run_step(
         )
 
     # 发送 csvPath 和 csvFullPath
-    _run_path_update(
-        url=url,
-        repo_root=repo_root,
-        logger=logger,
-        log_mode=log_mode,
-        models=models,
-        model_to_rule_id=model_to_rule_id,
-        access_token=access_token,
-        dry_run=dry_run,
-        verify_tls=verify_tls,
-        timeout_sec=timeout_sec,
-        csv_output_dirname=csv_output_dirname,
-        enable_full=enable_full,
-        fail_if_id_missing=fail_if_id_missing,
-    )
+    if not only_update_base_config:
+        _run_path_update(
+            url=url,
+            repo_root=repo_root,
+            logger=logger,
+            log_mode=log_mode,
+            models=models,
+            model_to_rule_id=model_to_rule_id,
+            access_token=access_token,
+            dry_run=dry_run,
+            verify_tls=verify_tls,
+            timeout_sec=timeout_sec,
+            csv_output_dirname=csv_output_dirname,
+            enable_full=enable_full,
+            fail_if_id_missing=fail_if_id_missing,
+        )
+    else:
+        _log(logger, log_mode, "[update_rule_api] only_update_base_config=true，跳过 Full Config 和 Path 更新")
 
     return UpdateApiResult(updated_models=updated_base, updated_models_full=updated_full)
 

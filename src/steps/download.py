@@ -226,10 +226,11 @@ def run_step(
         sources.append((obs_download_root, None))
 
     if current_preset == "prod_all":
-        # staging：每个 preset 的 dst_root 作为来源
+        # staging：每个 preset 的 dst_root/collect 作为来源
         for preset_name, _bucket, _cfg, dst_root in download_jobs:
-            if dst_root.exists() and dst_root.is_dir():
-                sources.append((dst_root, preset_name))
+            staging_collect = dst_root / "collect"
+            if staging_collect.exists() and staging_collect.is_dir():
+                sources.append((staging_collect, preset_name))
     else:
         # (b) 非 CSV：只需要考虑 repo_root/collect
         if (not csv_mode) and collect_root.exists() and collect_root.is_dir():
@@ -277,6 +278,32 @@ def run_step(
             task_dirs = _list_direct_task_dirs(src, taskid_re=taskid_re, filter_taskid_dirs=filter_taskid_dirs)
             if not task_dirs:
                 _log(logger, log_mode, f"[download] no direct taskid dirs found in collect_root: {src} (skip)")
+                continue
+
+            _log(logger, log_mode, f"[download] found direct taskid dirs: {len(task_dirs)} in {src}")
+            for task_dir in task_dirs:
+                moved_model = _move_one_taskdir_into_model(
+                    task_dir=task_dir,
+                    obs_download_root=obs_download_root,
+                    default_model=default_model,
+                    illegal_win_re=illegal_win_re,
+                    move_retries=move_retries,
+                    dry_run=dry_run,
+                    logger=logger,
+                    log_mode=log_mode,
+                    source_preset=source_preset,
+                )
+                if moved_model:
+                    model_set.add(moved_model)
+            continue
+
+        # 方法2：prod_all 模式下，staging_collect 一定是"容器目录"，强制按容器处理
+        if (current_preset == "prod_all") and (source_preset is not None):
+            _log(logger, log_mode, f"[download] prod_all: treat staging_collect as container only: {src} (source_preset={source_preset})")
+
+            task_dirs = _list_direct_task_dirs(src, taskid_re=taskid_re, filter_taskid_dirs=filter_taskid_dirs)
+            if not task_dirs:
+                _log(logger, log_mode, f"[download] no direct taskid dirs found in staging_collect: {src} (skip)")
                 continue
 
             _log(logger, log_mode, f"[download] found direct taskid dirs: {len(task_dirs)} in {src}")

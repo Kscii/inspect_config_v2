@@ -235,6 +235,7 @@ def _create_tables(cur, schema: str, db_dir: Path, model: str, dry_run: bool, lo
             "episode_id": "TEXT",
             "taskid": "TEXT",
             "model": "TEXT",
+            "area": "TEXT",
             "sn": "TEXT",
             "collected_at": "TEXT",
             "filename": "TEXT",

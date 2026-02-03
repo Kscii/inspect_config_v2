@@ -53,8 +53,8 @@ def run_step(
             _log(logger, log_mode, f"[generate_info] model={model} 不存在目录：{model_root} -> 跳过")
             continue
 
-        # 扫描所有 JSON 文件
-        json_files = [p for p in model_root.rglob(f"*{json_suffix}") if p.is_file()]
+        # 扫描所有 JSON 文件（排除 .source_preset.json）
+        json_files = [p for p in model_root.rglob(f"*{json_suffix}") if p.is_file() and p.name != ".source_preset.json"]
         if not json_files:
             _log(logger, log_mode, f"[generate_info] model={model} 未找到 JSON 文件 -> 跳过")
             continue
