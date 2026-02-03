@@ -4,8 +4,8 @@
 """
 
 from typing import Any, Dict, List, Optional, Tuple
-import psycopg2
-from psycopg2.extras import RealDictCursor
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 import pandas as pd
 
 
@@ -19,31 +19,39 @@ class DatabaseManager:
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self._conn = None
+        self._engine: Optional[Engine] = None
     
-    def connect(self):
+    def connect(self) -> Engine:
         """建立数据库连接"""
-        if self._conn is None or self._conn.closed:
-            self._conn = psycopg2.connect(
-                host=self.config["host"],
-                port=self.config["port"],
-                database=self.config["database"],
-                user=self.config["user"],
-                password=self.config["password"],
+        if self._engine is None:
+            # 构建 SQLAlchemy 连接字符串
+            db_url = (
+                f"postgresql://{self.config['user']}:{self.config['password']}"
+                f"@{self.config['host']}:{self.config['port']}/{self.config['database']}"
             )
-        return self._conn
+            self._engine = create_engine(db_url, pool_pre_ping=True)
+        return self._engine
     
     def close(self):
         """关闭数据库连接"""
-        if self._conn and not self._conn.closed:
-            self._conn.close()
-            self._conn = None
+        if self._engine:
+            self._engine.dispose()
+            self._engine = None
     
     def execute_query(self, query: str, params: Optional[Tuple] = None) -> pd.DataFrame:
         """执行查询并返回 DataFrame"""
-        conn = self.connect()
+        engine = self.connect()
         try:
-            return pd.read_sql_query(query, conn, params=params)
+            # SQLAlchemy 2.0+ 需要使用 text() 包装 SQL 语句
+            if params:
+                # 将 psycopg2 风格的 %s 参数转换为 SQLAlchemy 的命名参数
+                param_dict = {f"param_{i}": val for i, val in enumerate(params)}
+                query_modified = query
+                for i in range(len(params)):
+                    query_modified = query_modified.replace("%s", f":param_{i}", 1)
+                return pd.read_sql_query(text(query_modified), engine, params=param_dict)
+            else:
+                return pd.read_sql_query(text(query), engine)
         except Exception as e:
             print(f"Query error: {e}")
             raise
@@ -121,6 +129,7 @@ class DatabaseManager:
             fv.value,
             e.sn,
             e.taskid,
+            e.area,
             e.collected_at
         FROM {schema}.field_value fv
         JOIN {schema}.episode e ON fv.episode_id = e.episode_id
