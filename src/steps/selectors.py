@@ -589,7 +589,7 @@ def _extract_taskid_from_path(file_path: Path, model_root: Path) -> str:
 
 
 def _pick_one_json(root: Path) -> Optional[Path]:
-    cands = [p for p in root.rglob("*.json") if p.is_file()]
+    cands = [p for p in root.rglob("*.json") if p.is_file() and p.name != ".source_preset.json"]
     if not cands:
         return None
     collect_like = [p for p in cands if p.name.endswith("_collect.json")]

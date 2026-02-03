@@ -88,8 +88,8 @@ def run_step(
         if not ranges_full_csv:
             ranges_full_csv = repo_root / "csv_output" / model / f"{model}_ranges_full.csv"
 
-        # 扫描所有 JSON 文件
-        json_files = [p for p in model_root.rglob(f"*{json_suffix}") if p.is_file()]
+        # 扫描所有 JSON 文件（排除 .source_preset.json）
+        json_files = [p for p in model_root.rglob(f"*{json_suffix}") if p.is_file() and p.name != ".source_preset.json"]
         if not json_files:
             _log(logger, log_mode, f"[generate_db_csv] model={model} 未找到 JSON 文件 -> 跳过")
             continue
@@ -130,11 +130,15 @@ def run_step(
 
             taskid = _extract_taskid_from_path(json_path, model_root, default_value)
             
+            # 读取 area（从 .source_preset.json）
+            area = _extract_area_from_taskid(json_path, model_root, default_value)
+            
             # 默认列
             row = {
                 "episode_id": episode_id,
                 "taskid": taskid,
                 "model": model,
+                "area": area,
             }
             
             # 添加额外列（通过 selector 提取）
@@ -147,8 +151,8 @@ def run_step(
             
             episode_rows.append(row)
 
-        # 构建列顺序：episode_id, taskid, model, 额外列..., filename
-        episode_columns = ["episode_id", "taskid", "model"] + list(episode_extra_cols.keys()) + ["filename"]
+        # 构建列顺序：episode_id, taskid, model, area, 额外列..., filename
+        episode_columns = ["episode_id", "taskid", "model", "area"] + list(episode_extra_cols.keys()) + ["filename"]
         episode_df = pd.DataFrame(episode_rows, columns=episode_columns)
         episode_csv = out_dir / f"{model}_episode.csv"
         episode_df.to_csv(episode_csv, index=False, encoding=csv_encoding)
@@ -335,6 +339,27 @@ def _extract_taskid_from_path(json_path: Path, model_root: Path, default_value: 
         parts = rel_path.parts
         if len(parts) > 0:
             return parts[0]
+    except Exception:
+        pass
+    return default_value
+
+
+def _extract_area_from_taskid(json_path: Path, model_root: Path, default_value: str) -> str:
+    """
+    从 taskid 目录下的 .source_preset.json 中提取 area（preset 名称）
+    路径格式：obs_download/{model}/{taskid}/.source_preset.json
+    """
+    try:
+        rel_path = json_path.relative_to(model_root)
+        parts = rel_path.parts
+        if len(parts) > 0:
+            taskid = parts[0]
+            source_preset_file = model_root / taskid / ".source_preset.json"
+            if source_preset_file.exists():
+                data = json.loads(source_preset_file.read_text(encoding="utf-8-sig", errors="ignore"))
+                preset = data.get("preset", "")
+                if preset:
+                    return str(preset)
     except Exception:
         pass
     return default_value

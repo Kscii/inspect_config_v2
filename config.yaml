@@ -51,7 +51,7 @@ global:
     zhengzhou_prod:
       env: prod
       region: zhengzhou
-      base_url: https://zz-dojo-api.openloong.org.cn
+      base_url: https://dojo-api-zz.openloong.org.cn
       obs_bucket: openloong-zhengzhou-apps-private
 
   # 统一日志目录名（落在 repo 根目录下）
@@ -90,6 +90,9 @@ global:
       191: "QINGLOONGV2.5-TACTILE"
       194: "BUTLERV3"
       181: "青龙"
+      # 184: "KUAVO_4PRO_LB_GRIPPER_DEXHAND"
+      185: "KUAVO_4PRO_LB_GRIPPER"  
+      # 186: "KUAVO_4PRO_GRIPPER_DEXHAND"
     shanghai_prod:
       187: "BUTLERV3"
       188: "QINGLOONGV2.5-TACTILE"
@@ -105,7 +108,7 @@ global:
       202: "DWHEEL-TACTILE"
       203: "A2D"
       204: "A2"
-    zhengzhou_dev:
+    zhengzhou_prod:
       148: "BUTLERV3"
       149: "QINGLOONGV2.5-TACTILE"
       150: "QINGLOONGV2.5"
@@ -724,6 +727,11 @@ update_rule_api:
   fail_if_id_missing: true
   fail_if_txt_missing: true
   enable_full: true
+  
+  # 仅更新 Base Config（跳过 Full Config 和 Path 更新）
+  # - true: 只执行 Base Config 更新（仅发送 {"id": xxx, "config": "..."}）
+  # - false: 执行完整更新流程（Base + Full + csvPath + csvFullPath）
+  only_update_base_config: true
 
 
 # ==============================================================================
