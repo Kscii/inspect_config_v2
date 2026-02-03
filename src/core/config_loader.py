@@ -5,14 +5,12 @@
 - 支持 config.local.yaml 覆盖 config.yaml（优先级更高）
 - 深度合并（dict 递归合并；list 视为整体覆盖）
 - 兼容 presets 两种写法：
-  1) 推荐：global.presets（你当前的 config.yaml 就是这种）
-  2) 兼容：顶层 presets（旧写法）
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -96,7 +94,7 @@ def _extract_presets(cfg: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any
         presets = cfg.get("presets")  # 兼容旧写法
 
     if presets is None:
-        raise ValueError("缺少 presets：请在 global.presets 下提供 dev/prod（包含 base_url 与 obs_bucket）")
+        raise ValueError("缺少 presets：请在 global.presets 下提供预设（至少包含 env/base_url/obs_bucket/region）")
 
     if not isinstance(presets, dict):
         raise ValueError("presets 必须是一个 map/dict")
@@ -106,22 +104,74 @@ def _extract_presets(cfg: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any
 
 def _validate_presets(presets: Dict[str, Any]) -> None:
     """
-    校验 presets 必须包含 dev/prod，且都有 base_url 与 obs_bucket
+    兼容两种 presets 写法：
+
+    A) 旧写法（legacy）：
+        presets:
+          dev:  { base_url, obs_bucket, ... }
+          prod: { base_url, obs_bucket, ... }
+
+    B) 新写法（named presets）：
+        presets:
+          shanghai_dev:   { env: dev,  region: shanghai, base_url, obs_bucket }
+          shanghai_prod:  { env: prod, region: shanghai, base_url, obs_bucket }
+          zhengzhou_prod: { env: prod, region: zhengzhou, base_url, obs_bucket }
     """
-    for name in ("dev", "prod"):
-        p = presets.get(name)
+    if not presets:
+        raise ValueError("presets 不能为空")
+
+    # ---------- A) legacy ----------
+    if "dev" in presets or "prod" in presets:
+        for name in ("dev", "prod"):
+            p = presets.get(name)
+            if not isinstance(p, dict):
+                raise ValueError(f"缺少 presets.{name}（必须包含 base_url 与 obs_bucket）")
+            if not p.get("base_url"):
+                raise ValueError(f"缺少 presets.{name}.base_url")
+            if not p.get("obs_bucket"):
+                raise ValueError(f"缺少 presets.{name}.obs_bucket")
+        return
+
+    # ---------- B) named presets ----------
+    missing_fields: List[str] = []
+    env_set: set[str] = set()
+
+    for key, p in presets.items():
         if not isinstance(p, dict):
-            raise ValueError(f"缺少 presets.{name}（必须包含 base_url 与 obs_bucket）")
-        if not p.get("base_url"):
-            raise ValueError(f"缺少 presets.{name}.base_url")
-        if not p.get("obs_bucket"):
-            raise ValueError(f"缺少 presets.{name}.obs_bucket")
+            raise ValueError(f"presets.{key} 必须是 map/dict")
+
+        env = p.get("env")
+        region = p.get("region")
+        base_url = p.get("base_url")
+        obs_bucket = p.get("obs_bucket")
+
+        if not env:
+            missing_fields.append(f"presets.{key}.env")
+        else:
+            env_set.add(str(env))
+
+        if not region:
+            missing_fields.append(f"presets.{key}.region")
+        if not base_url:
+            missing_fields.append(f"presets.{key}.base_url")
+        if not obs_bucket:
+            missing_fields.append(f"presets.{key}.obs_bucket")
+
+    if missing_fields:
+        raise ValueError("presets 配置缺少字段：\n- " + "\n- ".join(missing_fields))
+
+    # 至少需要覆盖 dev / prod（你 pipeline 的基本前提）
+    if "dev" not in env_set:
+        raise ValueError("presets 中未找到 env=dev 的条目（至少需要一个 dev 环境预设）")
+    if "prod" not in env_set:
+        raise ValueError("presets 中未找到 env=prod 的条目（至少需要一个 prod 环境预设）")
 
 
 def normalize_and_validate_config(raw_cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
     做最基础的结构校验与轻量 normalize：
     - 校验 global/presets 存在且合法
+    - 兼容新 presets 写法时，自动补 alias：presets.dev / presets.prod
     - 不强行重排你的结构；尽量保持“config 的原样结构”
     """
     if not isinstance(raw_cfg, dict):
@@ -130,13 +180,30 @@ def normalize_and_validate_config(raw_cfg: Dict[str, Any]) -> Dict[str, Any]:
     global_cfg, presets = _extract_presets(raw_cfg)
     _validate_presets(presets)
 
+    def _pick_first_named(env_value: str, prefer_key: str) -> Optional[str]:
+        if prefer_key in presets and isinstance(presets.get(prefer_key), dict):
+            p = presets[prefer_key]
+            if str(p.get("env")) == env_value:
+                return prefer_key
+        for k in sorted(presets.keys()):
+            p = presets.get(k)
+            if isinstance(p, dict) and str(p.get("env")) == env_value:
+                return k
+        return None
+
+    if "dev" not in presets:
+        k_dev = _pick_first_named("dev", "shanghai_dev")
+        if k_dev:
+            presets["dev"] = presets[k_dev]
+
+    if "prod" not in presets:
+        k_prod = _pick_first_named("prod", "shanghai_prod")
+        if k_prod:
+            presets["prod"] = presets[k_prod]
+
     # 额外：确保 global.steps_to_run 存在（你当前配置有）
     steps_to_run = global_cfg.get("steps_to_run")
     if steps_to_run is None or not isinstance(steps_to_run, list) or not steps_to_run:
         raise ValueError("缺少 global.steps_to_run 或格式不正确（必须是非空 list）")
-
-    # 额外：确保每个 step 配置段存在（可选：你想严格就启用）
-    # 这里不强制每个 step 都要有段，避免未来新增 step 还没写配置就直接炸
-    # 但你要“稳定性+及时中断”，可以在 runner 层对 steps_to_run 做更严格校验。
 
     return raw_cfg
