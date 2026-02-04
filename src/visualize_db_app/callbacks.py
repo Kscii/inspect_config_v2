@@ -602,6 +602,7 @@ def update_chart(selected_fields, time_range, sort_by, group_by, view_mode, sele
                     "field_id": fid,
                     "field_name": info["display_name"],  # 用于图表显示
                     "thresholds": thresholds_map.get(info["field"]),  # 用 field 查询阈值
+                    "type": info.get("type", "numeric"),  # 字段类型
                 }
             )
 

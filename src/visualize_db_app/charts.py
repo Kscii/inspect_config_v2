@@ -424,6 +424,7 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
         field_id = field_info["field_id"]
         field_name = field_info["field_name"]
         thresholds = field_info.get("thresholds")
+        field_type = field_info.get("type", "numeric")
 
         field_df_all = df[df["field_id"] == field_id].copy()
         if field_df_all.empty:
@@ -437,36 +438,54 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
             group_df_all = field_df_all[field_df_all["group_key"] == group_value]
             total_count = len(group_df_all)
             
-            # 计算缺失值：空字符串、"N/A"、或转换为 numeric 后的 NaN
-            group_df_all["value_numeric"] = pd.to_numeric(group_df_all["value"], errors="coerce")
-            missing_mask = (
-                (group_df_all["value"] == "") | 
-                (group_df_all["value"] == "N/A") | 
-                (group_df_all["value_numeric"].isna())
-            )
-            missing_count = missing_mask.sum()
-            missing_rate = (missing_count / total_count * 100) if total_count > 0 else 0
-            
-            # 过滤出有效数值
-            group_df = group_df_all[~missing_mask].copy()
-            valid_count = len(group_df)
-            
-            if valid_count > 0:
-                mean_val = group_df["value_numeric"].mean()
-            else:
+            # metadata (non_numeric) 字段特殊处理
+            if field_type == "non_numeric":
+                # 对于 metadata：value 已在 callbacks 中转换为 0.0（通过）或 1.0（不通过）
+                # Missing: value == 1.0 表示原始值为空/N/A
+                missing_count = (group_df_all["value"] == 1.0).sum()
+                missing_rate = (missing_count / total_count * 100) if total_count > 0 else 0
+                
+                # 有效数据：value == 0.0（有值的记录）
+                valid_count = (group_df_all["value"] == 0.0).sum()
+                
+                # Pass: value == 0.0（有值即为通过）
+                pass_count = valid_count
+                pass_rate = (pass_count / total_count * 100) if total_count > 0 else 0
+                
+                # Mean 对 metadata 不适用
                 mean_val = float('nan')
+            else:
+                # numeric 字段的原有逻辑
+                # 计算缺失值：空字符串、"N/A"、或转换为 numeric 后的 NaN
+                group_df_all["value_numeric"] = pd.to_numeric(group_df_all["value"], errors="coerce")
+                missing_mask = (
+                    (group_df_all["value"] == "") | 
+                    (group_df_all["value"] == "N/A") | 
+                    (group_df_all["value_numeric"].isna())
+                )
+                missing_count = missing_mask.sum()
+                missing_rate = (missing_count / total_count * 100) if total_count > 0 else 0
+                
+                # 过滤出有效数值
+                group_df = group_df_all[~missing_mask].copy()
+                valid_count = len(group_df)
+                
+                if valid_count > 0:
+                    mean_val = group_df["value_numeric"].mean()
+                else:
+                    mean_val = float('nan')
 
-            pass_count = 0
-            pass_rate = None
-            if thresholds and thresholds.get("base") and valid_count > 0:
-                base_thresholds = thresholds["base"]
-                if base_thresholds and base_thresholds.get("min") is not None and base_thresholds.get("max") is not None:
-                    passed = group_df[
-                        (group_df["value_numeric"] >= base_thresholds["min"]) & 
-                        (group_df["value_numeric"] <= base_thresholds["max"])
-                    ]
-                    pass_count = len(passed)
-                    pass_rate = pass_count / valid_count * 100 if valid_count > 0 else 0
+                pass_count = 0
+                pass_rate = None
+                if thresholds and thresholds.get("base") and valid_count > 0:
+                    base_thresholds = thresholds["base"]
+                    if base_thresholds and base_thresholds.get("min") is not None and base_thresholds.get("max") is not None:
+                        passed = group_df[
+                            (group_df["value_numeric"] >= base_thresholds["min"]) & 
+                            (group_df["value_numeric"] <= base_thresholds["max"])
+                        ]
+                        pass_count = len(passed)
+                        pass_rate = pass_count / valid_count * 100 if valid_count > 0 else 0
 
             stats_rows.append(
                 html.Tr(
