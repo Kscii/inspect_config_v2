@@ -115,7 +115,7 @@ def create_scatter_plot(
                     f"Time: {row['collected_at']}<br>"
                     f"Value: {row['value']:.4f}"
                 )
-                episode_ids.append(row["episode_id"])
+                episode_ids.append([row["episode_id"], field_id])
 
             fig.add_trace(
                 go.Scatter(
@@ -286,7 +286,7 @@ def create_scatter_plot_multi_subplots(
                     f"Time: {row['collected_at']}<br>"
                     f"Value: {row['value']:.4f}"
                 )
-                episode_ids.append(row["episode_id"])
+                episode_ids.append([row["episode_id"], field_id])
 
             showlegend = (not legend_shown)
             fig.add_trace(
