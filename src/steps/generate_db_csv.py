@@ -185,12 +185,14 @@ def run_step(
         field_rows = []
         for field_id, field in enumerate(fields, start=1):
             rule_code = _extract_rule_code(field)
+            field_name = _extract_field_name(field)
             field_type = field_type_map.get(field, "")
             
             # 默认列
             row = {
                 "field_id": field_id,
                 "field": field,
+                "field_name": field_name,
                 "rule_code": rule_code,
                 "type": field_type,
             }
@@ -205,7 +207,7 @@ def run_step(
             field_rows.append(row)
 
         # 构建列顺序
-        field_columns = ["field_id", "field", "rule_code", "type"] + list(field_extra_cols.keys())
+        field_columns = ["field_id", "field", "field_name", "rule_code", "type"] + list(field_extra_cols.keys())
         field_df = pd.DataFrame(field_rows, columns=field_columns)
         field_csv = out_dir / f"{model}_field.csv"
         field_df.to_csv(field_csv, index=False, encoding=csv_encoding)
@@ -374,6 +376,76 @@ def _extract_rule_code(field: str) -> str:
     match = re.search(r'\[<ruleCode>=<([^>]+)>\]', field)
     if match:
         return match.group(1)
+    return ""
+
+
+def _extract_field_name(field: str) -> str:
+    """
+    从 selector 字符串中提取 field_name
+    
+    规则：
+    1. 对于 [<ruleCode>=<metadata_raw>] 的字段：
+       - 如果存在 .<camera_info> 或 .<joint_info>，显示其后的所有 <> 中的内容
+       - 否则打印 .<metadata> 之后的所有 <> 中的内容
+       - 如果不符合上述条件，打印 .[<name>=<metadata.json>] 之后的所有 <> 中的内容
+    2. 对于其他字段：
+       取最后一个 [<name>=<xxx>] 中的 xxx 和最后一个 .<yyy> 中的 yyy
+       格式为 "xxx-yyy"
+    """
+    rule_code = _extract_rule_code(field)
+    
+    if rule_code == "metadata_raw":
+        # metadata_raw 特殊处理
+        if ".<camera_info>" in field or ".<joint_info>" in field:
+            # 找到 camera_info 或 joint_info 的位置
+            if ".<camera_info>" in field:
+                start_pos = field.find(".<camera_info>")
+                after_text = field[start_pos + len(".<camera_info>"):]
+            else:
+                start_pos = field.find(".<joint_info>")
+                after_text = field[start_pos + len(".<joint_info>"):]
+            
+            # 提取所有 <> 中的内容（注意是 <xxx> 而不是 .<xxx>）
+            # 匹配所有 <xxx> 格式
+            matches = re.findall(r'<([^>]+)>', after_text)
+            return "-".join(matches)
+        
+        elif ".<metadata>" in field:
+            # 找到 .<metadata> 之后的所有 <> 内容
+            start_pos = field.find(".<metadata>")
+            after_text = field[start_pos + len(".<metadata>"):]
+            matches = re.findall(r'<([^>]+)>', after_text)
+            return "-".join(matches)
+        
+        else:
+            # 找到 .[<name>=<metadata.json>] 之后的所有 <> 内容
+            pattern = r'\[<name>=<metadata\.json>\]'
+            match = re.search(pattern, field)
+            if match:
+                after_text = field[match.end():]
+                matches = re.findall(r'<([^>]+)>', after_text)
+                return "-".join(matches)
+    
+    else:
+        # 一般字段处理
+        # 提取最后一个 [<name>=<xxx>] 中的 xxx
+        name_matches = re.findall(r'\[<name>=<([^>]+)>\]', field)
+        last_name = name_matches[-1] if name_matches else ""
+        
+        # 提取最后一个 .<yyy> 中的 yyy
+        # 匹配 .<xxx> 格式（不是 .[...] 格式）
+        dot_matches = re.findall(r'\.<([^>]+)>', field)
+        last_dot = dot_matches[-1] if dot_matches else ""
+        
+        # 组合结果
+        parts = []
+        if last_name:
+            parts.append(last_name)
+        if last_dot:
+            parts.append(last_dot)
+        
+        return "-".join(parts)
+    
     return ""
 
 

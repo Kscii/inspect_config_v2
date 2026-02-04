@@ -14,37 +14,38 @@ def qident(name: str) -> str:
     return f'"{name}"'
 
 
+def _placeholders(n: int) -> str:
+    return ",".join(["%s"] * n)
+
+
 class DatabaseManager:
     """数据库管理器"""
-    
+
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self._engine: Optional[Engine] = None
-    
+
     def connect(self) -> Engine:
         """建立数据库连接"""
         if self._engine is None:
-            # 构建 SQLAlchemy 连接字符串
             db_url = (
                 f"postgresql://{self.config['user']}:{self.config['password']}"
                 f"@{self.config['host']}:{self.config['port']}/{self.config['database']}"
             )
             self._engine = create_engine(db_url, pool_pre_ping=True)
         return self._engine
-    
+
     def close(self):
         """关闭数据库连接"""
         if self._engine:
             self._engine.dispose()
             self._engine = None
-    
+
     def execute_query(self, query: str, params: Optional[Tuple] = None) -> pd.DataFrame:
-        """执行查询并返回 DataFrame"""
+        """执行查询并返回 DataFrame（支持 %s 参数）"""
         engine = self.connect()
         try:
-            # SQLAlchemy 2.0+ 需要使用 text() 包装 SQL 语句
             if params:
-                # 将 psycopg2 风格的 %s 参数转换为 SQLAlchemy 的命名参数
                 param_dict = {f"param_{i}": val for i, val in enumerate(params)}
                 query_modified = query
                 for i in range(len(params)):
@@ -55,7 +56,7 @@ class DatabaseManager:
         except Exception as e:
             print(f"Query error: {e}")
             raise
-    
+
     def get_models(self) -> List[str]:
         """获取所有 model（从 information_schema 读取 schema 名）"""
         query = """
@@ -66,9 +67,8 @@ class DatabaseManager:
         ORDER BY schema_name
         """
         df = self.execute_query(query)
-        # 不转换大小写，保持数据库中的原始名称
         return df["schema_name"].tolist()
-    
+
     def get_rule_codes(self, model: str) -> List[str]:
         """获取指定 model 下的所有 rule_code"""
         schema = qident(model)
@@ -80,48 +80,154 @@ class DatabaseManager:
         """
         df = self.execute_query(query)
         return df["rule_code"].tolist()
-    
+
     def get_fields(self, model: str, rule_code: str) -> List[Dict[str, Any]]:
-        """获取指定 model 和 rule_code 下的所有字段"""
+        """获取指定 model 和 rule_code 下的所有字段（按 field 排序）"""
         schema = qident(model)
         query = f"""
-        SELECT field_id, field, type
+        SELECT field_id, field, field_name, type
         FROM {schema}.field
-        WHERE rule_code = %s AND type = 'numeric'
+        WHERE rule_code = %s
         ORDER BY field
         """
         df = self.execute_query(query, (rule_code,))
         return df.to_dict("records")
-    
+
+    def get_field_names_batch(self, model: str, field_ids: List[int]) -> Dict[int, str]:
+        """批量获取 field_id -> field_name（如果 field_name 为空则返回 field）"""
+        if not field_ids:
+            return {}
+        schema = qident(model)
+        ph = _placeholders(len(field_ids))
+        query = f"""
+        SELECT field_id, field, field_name
+        FROM {schema}.field
+        WHERE field_id IN ({ph})
+        """
+        df = self.execute_query(query, tuple(field_ids))
+        if df.empty:
+            return {}
+        return {int(r["field_id"]): (r["field_name"] if r["field_name"] and r["field_name"].strip() else r["field"]) for _, r in df.iterrows()}
+
+    def get_fields_batch(self, model: str, field_ids: List[int]) -> Dict[int, str]:
+        """批量获取 field_id -> field"""
+        if not field_ids:
+            return {}
+        schema = qident(model)
+        ph = _placeholders(len(field_ids))
+        query = f"""
+        SELECT field_id, field
+        FROM {schema}.field
+        WHERE field_id IN ({ph})
+        """
+        df = self.execute_query(query, tuple(field_ids))
+        if df.empty:
+            return {}
+        return {int(r["field_id"]): r["field"] for _, r in df.iterrows()}
+
+    def get_field_info_batch(self, model: str, field_ids: List[int]) -> Dict[int, Dict[str, str]]:
+        """批量获取 field_id -> {field, field_name, display_name, type}"""
+        if not field_ids:
+            return {}
+        schema = qident(model)
+        ph = _placeholders(len(field_ids))
+        query = f"""
+        SELECT field_id, field, field_name, type
+        FROM {schema}.field
+        WHERE field_id IN ({ph})
+        """
+        df = self.execute_query(query, tuple(field_ids))
+        if df.empty:
+            return {}
+        result = {}
+        for _, r in df.iterrows():
+            fid = int(r["field_id"])
+            field = r["field"]
+            field_name = r["field_name"]
+            field_type = r["type"]
+            display_name = field_name if field_name and field_name.strip() else field
+            result[fid] = {
+                "field": field,
+                "field_name": field_name,
+                "display_name": display_name,
+                "type": field_type,
+            }
+        return result
+
+    def get_thresholds_batch(self, model: str, fields: List[str]) -> Dict[str, Optional[Dict[str, Dict[str, float]]]]:
+        """批量获取阈值：field -> {base:{min,max}, full:{min,max}}；没有则返回 None"""
+        if not fields:
+            return {}
+        schema = qident(model)
+        ph = _placeholders(len(fields))
+
+        # base
+        query_base = f"""
+        SELECT field, min, max
+        FROM {schema}.thresholds_base
+        WHERE field IN ({ph})
+        """
+        df_base = self.execute_query(query_base, tuple(fields))
+
+        # full
+        query_full = f"""
+        SELECT field, min, max
+        FROM {schema}.thresholds_full
+        WHERE field IN ({ph})
+        """
+        df_full = self.execute_query(query_full, tuple(fields))
+
+        result: Dict[str, Dict[str, Optional[Dict[str, float]]]] = {f: {"base": None, "full": None} for f in fields}
+
+        if not df_base.empty:
+            for _, row in df_base.iterrows():
+                f = row["field"]
+                try:
+                    result[f]["base"] = {
+                        "min": float(row["min"]) if pd.notna(row["min"]) else None,
+                        "max": float(row["max"]) if pd.notna(row["max"]) else None,
+                    }
+                except (ValueError, TypeError):
+                    result[f]["base"] = None
+
+        if not df_full.empty:
+            for _, row in df_full.iterrows():
+                f = row["field"]
+                try:
+                    result[f]["full"] = {
+                        "min": float(row["min"]) if pd.notna(row["min"]) else None,
+                        "max": float(row["max"]) if pd.notna(row["max"]) else None,
+                    }
+                except (ValueError, TypeError):
+                    result[f]["full"] = None
+
+        # 归一：如果 base/full 都 None，则整体 None
+        out: Dict[str, Optional[Dict[str, Dict[str, float]]]] = {}
+        for f, v in result.items():
+            if v["base"] is None and v["full"] is None:
+                out[f] = None
+            else:
+                out[f] = {"base": v["base"], "full": v["full"]}
+        return out
+
     def get_field_data(
         self,
         model: str,
         field_ids: List[int],
         time_range: Optional[Tuple[str, str]] = None,
     ) -> pd.DataFrame:
-        """
-        获取字段数据（包含 episode_id, field_id, value, sn, taskid, collected_at）
-        
-        Args:
-            model: 模型名
-            field_ids: 字段 ID 列表
-            time_range: 时间范围 (start, end)，格式 YYYY-MM-DD
-        
-        Returns:
-            DataFrame with columns: episode_id, field_id, value, sn, taskid, collected_at
-        """
+        """获取字段数据（包含 episode 维信息）"""
         schema = qident(model)
-        
-        # 构建 WHERE 条件
+
         where_clauses = [f"fv.field_id IN ({','.join(map(str, field_ids))})"]
-        params = []
-        
+        params: List[Any] = []
+
         if time_range:
             where_clauses.append("e.collected_at >= %s AND e.collected_at <= %s")
             params.extend(time_range)
-        
+
         where_str = " AND ".join(where_clauses)
-        
+
         query = f"""
         SELECT 
             fv.episode_id,
@@ -136,63 +242,10 @@ class DatabaseManager:
         WHERE {where_str}
         ORDER BY e.collected_at, fv.field_id
         """
-        
         return self.execute_query(query, tuple(params) if params else None)
-    
-    def get_thresholds(self, model: str, field: str) -> Optional[Dict[str, Dict[str, float]]]:
-        """获取字段的阈值（base 和 full 的 min, max）"""
-        schema = qident(model)
-        
-        result = {}
-        
-        # 获取 base 阈值
-        query_base = f"""
-        SELECT min, max
-        FROM {schema}.thresholds_base
-        WHERE field = %s
-        """
-        df_base = self.execute_query(query_base, (field,))
-        
-        if not df_base.empty:
-            row = df_base.iloc[0]
-            try:
-                result["base"] = {
-                    "min": float(row["min"]) if pd.notna(row["min"]) else None,
-                    "max": float(row["max"]) if pd.notna(row["max"]) else None,
-                }
-            except (ValueError, TypeError):
-                result["base"] = None
-        else:
-            result["base"] = None
-        
-        # 获取 full 阈值
-        query_full = f"""
-        SELECT min, max
-        FROM {schema}.thresholds_full
-        WHERE field = %s
-        """
-        df_full = self.execute_query(query_full, (field,))
-        
-        if not df_full.empty:
-            row = df_full.iloc[0]
-            try:
-                result["full"] = {
-                    "min": float(row["min"]) if pd.notna(row["min"]) else None,
-                    "max": float(row["max"]) if pd.notna(row["max"]) else None,
-                }
-            except (ValueError, TypeError):
-                result["full"] = None
-        else:
-            result["full"] = None
-        
-        # 如果两组阈值都为空，返回 None
-        if result["base"] is None and result["full"] is None:
-            return None
-        
-        return result
-    
+
     def get_field_name(self, model: str, field_id: int) -> str:
-        """根据 field_id 获取 field 名称"""
+        """兼容旧接口：单个 field_id 获取 field"""
         schema = qident(model)
         query = f"""
         SELECT field

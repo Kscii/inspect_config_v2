@@ -31,11 +31,14 @@ def create_layout():
                                 id="loading-tree",
                                 type="default",
                                 children=[
-                                    html.Div(id="navigation-tree", style={"overflowY": "auto", "maxHeight": "800px"})
+                                    html.Div(
+                                        id="navigation-tree",
+                                        style={"overflowY": "auto", "maxHeight": "1000px"},
+                                    )
                                 ],
                             ),
                         ],
-                        width=3,
+                        width=2,
                         style={"borderRight": "1px solid #dee2e6", "paddingRight": "20px"},
                     ),
                     # 右侧图表区
@@ -46,6 +49,28 @@ def create_layout():
                                 [
                                     dbc.CardBody(
                                         [
+                                            # 视图模式选择
+                                            dbc.Row(
+                                                [
+                                                    dbc.Col(
+                                                        [
+                                                            html.Label("视图模式："),
+                                                            dbc.RadioItems(
+                                                                id="view-mode-radio",
+                                                                options=[
+                                                                    {"label": "单图模式", "value": "single"},
+                                                                    {"label": "多图模式", "value": "multi"},
+                                                                ],
+                                                                value="single",
+                                                                inline=True,
+                                                            ),
+                                                        ],
+                                                        width=12,
+                                                    )
+                                                ],
+                                                className="mb-2",
+                                            ),
+
                                             # 时间范围、排序和分类选择
                                             dbc.Row(
                                                 [
@@ -105,6 +130,35 @@ def create_layout():
                                                 ],
                                                 className="mb-3",
                                             ),
+
+                                            # multi 模式分页控件（由回调控制显隐/禁用）
+                                            html.Div(
+                                                id="multi-pagination-container",
+                                                children=[
+                                                    dbc.Button(
+                                                        "上一页",
+                                                        id="multi-prev-btn",
+                                                        color="secondary",
+                                                        outline=True,
+                                                        size="sm",
+                                                        className="me-2",
+                                                    ),
+                                                    html.Span(
+                                                        id="multi-page-indicator",
+                                                        className="text-muted small me-2",
+                                                    ),
+                                                    dbc.Button(
+                                                        "下一页",
+                                                        id="multi-next-btn",
+                                                        color="secondary",
+                                                        outline=True,
+                                                        size="sm",
+                                                    ),
+                                                ],
+                                                style={"display": "none"},
+                                                className="mb-3",
+                                            ),
+
                                             # 已选信息显示（字段 + Episode）
                                             dbc.Row(
                                                 [
@@ -113,7 +167,10 @@ def create_layout():
                                                             html.Div(
                                                                 [
                                                                     html.Label("已选信息："),
-                                                                    html.Div(id="selected-info-display", className="mb-2"),
+                                                                    html.Div(
+                                                                        id="selected-info-display",
+                                                                        className="mb-2",
+                                                                    ),
                                                                 ]
                                                             ),
                                                         ],
@@ -127,7 +184,8 @@ def create_layout():
                                 ],
                                 className="mb-4",
                             ),
-            # 图表区
+
+                            # 图表区
                             dcc.Loading(
                                 id="loading-chart",
                                 type="default",
@@ -140,12 +198,19 @@ def create_layout():
                     ),
                 ],
             ),
+
             # 隐藏的存储组件
+            dcc.Store(id="view-mode-store", data="single"),
             dcc.Store(id="selected-fields-store", data=[]),  # 存储已选字段列表
             dcc.Store(id="current-model-store"),  # 当前选中的 model
             dcc.Store(id="expanded-model-store", data=None),  # 当前展开的 model（字符串或 None）
             dcc.Store(id="expanded-rule-store", data=None),  # 当前展开的 rule（{"model": "...", "rule": "..."} 或 None）
             dcc.Store(id="selected-episode-store", data=None),  # 当前选中的 episode 信息
+
+            # multi 模式专用
+            dcc.Store(id="selected-rule-store", data=None),  # {"model":..., "rule":...}
+            dcc.Store(id="multi-page-store", data={"page": 1}),
+            dcc.Store(id="multi-total-pages-store", data=1),
         ],
         fluid=True,
         className="p-4",
