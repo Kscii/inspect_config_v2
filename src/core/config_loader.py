@@ -160,12 +160,6 @@ def _validate_presets(presets: Dict[str, Any]) -> None:
     if missing_fields:
         raise ValueError("presets 配置缺少字段：\n- " + "\n- ".join(missing_fields))
 
-    # 至少需要覆盖 dev / prod（你 pipeline 的基本前提）
-    if "dev" not in env_set:
-        raise ValueError("presets 中未找到 env=dev 的条目（至少需要一个 dev 环境预设）")
-    if "prod" not in env_set:
-        raise ValueError("presets 中未找到 env=prod 的条目（至少需要一个 prod 环境预设）")
-
 
 def normalize_and_validate_config(raw_cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -179,27 +173,6 @@ def normalize_and_validate_config(raw_cfg: Dict[str, Any]) -> Dict[str, Any]:
 
     global_cfg, presets = _extract_presets(raw_cfg)
     _validate_presets(presets)
-
-    def _pick_first_named(env_value: str, prefer_key: str) -> Optional[str]:
-        if prefer_key in presets and isinstance(presets.get(prefer_key), dict):
-            p = presets[prefer_key]
-            if str(p.get("env")) == env_value:
-                return prefer_key
-        for k in sorted(presets.keys()):
-            p = presets.get(k)
-            if isinstance(p, dict) and str(p.get("env")) == env_value:
-                return k
-        return None
-
-    if "dev" not in presets:
-        k_dev = _pick_first_named("dev", "shanghai_dev")
-        if k_dev:
-            presets["dev"] = presets[k_dev]
-
-    if "prod" not in presets:
-        k_prod = _pick_first_named("prod", "shanghai_prod")
-        if k_prod:
-            presets["prod"] = presets[k_prod]
 
     # 额外：确保 global.steps_to_run 存在（你当前配置有）
     steps_to_run = global_cfg.get("steps_to_run")

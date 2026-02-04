@@ -1,7 +1,4 @@
-"""
-图表生成模块
-"""
-
+# src/visualize_db_app/charts.py
 from typing import List, Dict, Any, Tuple
 import math
 import pandas as pd
@@ -435,7 +432,7 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
 
         stats_rows = []
         for group_value in field_df_all["group_key"].unique():
-            group_df_all = field_df_all[field_df_all["group_key"] == group_value]
+            group_df_all = field_df_all[field_df_all["group_key"] == group_value].copy()
             total_count = len(group_df_all)
             
             # metadata (non_numeric) 字段特殊处理
@@ -451,6 +448,9 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
                 # Pass: value == 0.0（有值即为通过）
                 pass_count = valid_count
                 pass_rate = (pass_count / total_count * 100) if total_count > 0 else 0
+                
+                # Fail: 对于 metadata，没有真正的 fail（除了 missing）
+                fail_count = 0
                 
                 # Mean 对 metadata 不适用
                 mean_val = float('nan')
@@ -476,6 +476,7 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
                     mean_val = float('nan')
 
                 pass_count = 0
+                fail_count = 0
                 pass_rate = None
                 if thresholds and thresholds.get("base") and valid_count > 0:
                     base_thresholds = thresholds["base"]
@@ -485,6 +486,7 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
                             (group_df["value_numeric"] <= base_thresholds["max"])
                         ]
                         pass_count = len(passed)
+                        fail_count = valid_count - pass_count
                         pass_rate = pass_count / valid_count * 100 if valid_count > 0 else 0
 
             stats_rows.append(
@@ -494,6 +496,8 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
                         html.Td(f"{mean_val:.4f}" if not pd.isna(mean_val) else "N/A"),
                         html.Td(f"{pass_rate:.2f}%" if pass_rate is not None else "N/A"),
                         html.Td(str(pass_count)),
+                        html.Td(str(fail_count)),
+                        html.Td(str(missing_count)),
                         html.Td(f"{missing_rate:.1f}%"),
                     ]
                 )
@@ -511,6 +515,8 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
                             html.Th("Mean"),
                             html.Th("Pass Rate"),
                             html.Th("Pass Count"),
+                            html.Th("Fail Count"),
+                            html.Th("Missing Count"),
                             html.Th("Missing Rate"),
                         ]
                     )

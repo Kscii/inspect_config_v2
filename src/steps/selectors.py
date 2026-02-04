@@ -101,8 +101,8 @@ def run_step(
 
     use_union_of_all_samples: bool = bool(step_cfg.get("use_union_of_all_samples", False))
     enable_union_min_sample_filter: bool = bool(step_cfg.get("enable_union_min_sample_filter", False))
-    union_min_sample_count: int = int(step_cfg.get("union_min_sample_count", 1))
-    union_min_sample_count_by_model: Dict[str, int] = dict(step_cfg.get("union_min_sample_count_by_model", {}))
+    union_min_sample_ratio: float = float(step_cfg.get("union_min_sample_ratio", 0.8))
+    union_min_sample_ratio_by_model: Dict[str, float] = dict(step_cfg.get("union_min_sample_ratio_by_model", {}))
 
     model_to_txt: Dict[str, Path] = {}
 
@@ -147,8 +147,8 @@ def run_step(
 
         # 4) 可选：使用所有任务的并集
         if use_union_of_all_samples:
-            # 确定当前构型的最小样本数阈值
-            min_sample_threshold = union_min_sample_count_by_model.get(model, union_min_sample_count)
+            # 确定当前构型的最小样本比例阈值
+            min_sample_ratio = union_min_sample_ratio_by_model.get(model, union_min_sample_ratio)
             
             union_selectors = _compute_union_of_all_samples(
                 model=model,
@@ -169,7 +169,7 @@ def run_step(
                 enable_angle_block_exclude=enable_angle_block_exclude,
                 allow_all_if_no_allowlists=allow_all_if_no_allowlists,
                 enable_min_sample_filter=enable_union_min_sample_filter,
-                min_sample_threshold=min_sample_threshold,
+                min_sample_ratio=min_sample_ratio,
             )
             _log(logger, log_mode, f"[selectors] model={model} union selectors from all tasks: {len(union_selectors)}")
             filtered = sorted(union_selectors)
@@ -287,16 +287,16 @@ def _compute_union_of_all_samples(
     enable_angle_block_exclude: bool,
     allow_all_if_no_allowlists: bool,
     enable_min_sample_filter: bool = False,
-    min_sample_threshold: int = 1,
+    min_sample_ratio: float = 0.8,
 ) -> Set[str]:
     """
     遍历 model_root 下的所有任务目录，对每个任务：
     1. 生成原始 selectors
     2. 应用过滤规则
     3. 求并集
-    4. 可选：过滤出现次数少的字段
+    4. 可选：过滤出现比例低的字段
     
-    返回：所有任务过滤后 selectors 的并集（可选经过最小样本数过滤）
+    返回：所有任务过滤后 selectors 的并集（可选经过最小样本比例过滤）
     """
     union: Set[str] = set()
     # 统计每个 selector 在多少个样本中出现
@@ -354,12 +354,13 @@ def _compute_union_of_all_samples(
     
     _log(logger, log_mode, f"[selectors][UNION] model={model} 完成：成功处理 {success_count} 个任务，跳过 {skip_count} 个任务")
     
-    # 应用最小样本数过滤
-    if enable_min_sample_filter and selector_count:
+    # 应用最小样本比例过滤
+    if enable_min_sample_filter and selector_count and success_count > 0:
         original_count = len(union)
-        union = {sel for sel in union if selector_count.get(sel, 0) > min_sample_threshold}
+        # 计算比例：selector出现的样本数 / 总样本数 >= 阈值比例
+        union = {sel for sel in union if selector_count.get(sel, 0) / success_count >= min_sample_ratio}
         filtered_out = original_count - len(union)
-        _log(logger, log_mode, f"[selectors][UNION] model={model} 最小样本数过滤：阈值={min_sample_threshold}, 排除字段={filtered_out}, 保留字段={len(union)}")
+        _log(logger, log_mode, f"[selectors][UNION] model={model} 最小样本比例过滤：阈值={min_sample_ratio*100:.1f}% (总样本={success_count}), 排除字段={filtered_out}, 保留字段={len(union)}")
     
     return union
 

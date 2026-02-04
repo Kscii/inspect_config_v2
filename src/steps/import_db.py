@@ -8,18 +8,21 @@ import_db step
 3) 动态创建表结构（如果不存在）
 4) 每次导入前 TRUNCATE 清空旧数据
 5) 使用 COPY 命令高效导入
+6) collect_json：不写临时 CSV，不校验 JSON，批量插入（execute_values）
 """
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import psycopg2
     from psycopg2 import sql
     from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+    from psycopg2.extras import execute_values
 except ImportError:
     psycopg2 = None
 
@@ -149,7 +152,7 @@ def _import_model(
         if create_tables_if_missing:
             _create_tables(cur, schema, db_dir, model, dry_run, logger, log_mode)
 
-        # 3. 导入数据（按顺序：episode → field → thresholds → field_value）
+        # 3. 导入数据（按顺序：episode → field → thresholds → field_value → collect_json）
         # episode
         episode_csv = db_dir / f"{model}_episode.csv"
         if episode_csv.exists():
@@ -221,13 +224,26 @@ def _import_model(
                 log_mode=log_mode,
             )
 
+        # collect_json (从 obs_download 读取 JSON 文件)
+        if episode_csv.exists():
+            _import_collect_json(
+                cur=cur,
+                schema=schema,
+                model=model,
+                episode_csv=episode_csv,
+                truncate=truncate_before_import,
+                dry_run=dry_run,
+                logger=logger,
+                log_mode=log_mode,
+            )
+
     finally:
         cur.close()
 
 
 def _create_tables(cur, schema: str, db_dir: Path, model: str, dry_run: bool, logger, log_mode: str) -> None:
     """创建表结构（如果不存在），动态从 CSV 读取列定义"""
-    
+
     # 定义核心列的基础类型（不含约束）
     # 格式：{table_name: {column_name: base_type}}
     core_column_base_types = {
@@ -239,6 +255,7 @@ def _create_tables(cur, schema: str, db_dir: Path, model: str, dry_run: bool, lo
             "sn": "TEXT",
             "collected_at": "TEXT",
             "filename": "TEXT",
+            "obs_uri": "TEXT",
         },
         "field": {
             "field_id": "BIGINT",
@@ -268,8 +285,13 @@ def _create_tables(cur, schema: str, db_dir: Path, model: str, dry_run: bool, lo
             "field_id": "BIGINT",
             "value": "TEXT",
         },
+        "collect_json": {
+            "episode_id": "TEXT",
+            "filename": "TEXT",
+            "json": "JSONB",
+        },
     }
-    
+
     # 定义主键
     primary_keys = {
         "episode": "episode_id",
@@ -277,41 +299,46 @@ def _create_tables(cur, schema: str, db_dir: Path, model: str, dry_run: bool, lo
         "thresholds_base": "field",
         "thresholds_full": "field",
         "field_value": ["episode_id", "field_id"],  # 复合主键
+        "collect_json": "episode_id",
     }
-    
+
     # 定义额外约束
     unique_constraints = {
         "field": ["field"],  # field 列需要 UNIQUE
     }
 
     # 为每个表动态生成建表语句
-    tables_to_create = ["episode", "field", "thresholds_base", "thresholds_full", "field_value"]
-    
+    tables_to_create = ["episode", "field", "thresholds_base", "thresholds_full", "field_value", "collect_json"]
+
     # 预先生成 schema_qualified（用于 SQL 语句）
     schema_qualified = sql.Identifier(schema).as_string(cur)
-    
+
     for table_name in tables_to_create:
-        csv_file = db_dir / f"{model}_{table_name}.csv"
-        
-        if not csv_file.exists():
-            continue
-        
-        # 从 CSV 读取列名
-        csv_columns = _read_csv_columns(csv_file)
-        if not csv_columns:
-            _log(logger, log_mode, f"[import_db] 警告：无法读取 {csv_file} 的列名")
-            continue
-        
+        # collect_json 表不依赖 CSV，使用固定列定义
+        if table_name == "collect_json":
+            csv_columns = ["episode_id", "filename", "json"]
+        else:
+            csv_file = db_dir / f"{model}_{table_name}.csv"
+
+            if not csv_file.exists():
+                continue
+
+            # 从 CSV 读取列名
+            csv_columns = _read_csv_columns(csv_file)
+            if not csv_columns:
+                _log(logger, log_mode, f"[import_db] 警告：无法读取 {csv_file} 的列名")
+                continue
+
         _log(logger, log_mode, f"[import_db] {table_name} CSV 列: {csv_columns}")
-        
+
         # 获取该表的核心列类型定义
         base_types = core_column_base_types.get(table_name, {})
-        
+
         # 构建列定义
-        column_defs = []
+        column_defs: List[str] = []
         for col in csv_columns:
             base_type = base_types.get(col, "TEXT")  # 额外列默认为 TEXT
-            
+
             # 检查是否需要添加 UNIQUE 约束（但不是主键的情况）
             col_def = f"{col} {base_type}"
             if table_name in unique_constraints and col in unique_constraints[table_name]:
@@ -319,13 +346,13 @@ def _create_tables(cur, schema: str, db_dir: Path, model: str, dry_run: bool, lo
                 # 只有在不是主键的情况下才添加 UNIQUE
                 if not (isinstance(pk, str) and pk == col):
                     col_def += " UNIQUE"
-            
+
             # 检查是否需要添加 NOT NULL（对于非主键的外键列）
             if table_name == "field_value" and col in ["episode_id", "field_id"]:
                 col_def += " NOT NULL"
-            
+
             column_defs.append(col_def)
-        
+
         # 添加主键约束
         pk = primary_keys.get(table_name)
         if pk:
@@ -338,15 +365,18 @@ def _create_tables(cur, schema: str, db_dir: Path, model: str, dry_run: bool, lo
                     if col_def.startswith(f"{pk} "):
                         column_defs[i] = col_def + " PRIMARY KEY"
                         break
-        
+
         # 先尝试删除旧表（如果列数不匹配，需要重建）
         if not dry_run:
             try:
-                # 检查表是否存在
-                check_sql = f"SELECT column_name FROM information_schema.columns WHERE table_schema = '{schema}' AND table_name = '{table_name}' ORDER BY ordinal_position"
+                check_sql = (
+                    f"SELECT column_name FROM information_schema.columns "
+                    f"WHERE table_schema = '{schema}' AND table_name = '{table_name}' "
+                    f"ORDER BY ordinal_position"
+                )
                 cur.execute(check_sql)
                 existing_columns = [row[0] for row in cur.fetchall()]
-                
+
                 if existing_columns and existing_columns != csv_columns:
                     _log(logger, log_mode, f"[import_db] 表 {schema}.{table_name} 列不匹配，删除重建")
                     _log(logger, log_mode, f"[import_db]   现有列: {existing_columns}")
@@ -354,14 +384,13 @@ def _create_tables(cur, schema: str, db_dir: Path, model: str, dry_run: bool, lo
                     drop_sql = f"DROP TABLE IF EXISTS {schema_qualified}.{table_name} CASCADE"
                     cur.execute(drop_sql)
             except Exception as e:
-                # 忽略检查错误，继续创建表
                 _log(logger, log_mode, f"[import_db] 检查表结构时出错（忽略）: {e}")
-        
+
         # 生成 CREATE TABLE 语句
         schema_qualified = sql.Identifier(schema).as_string(cur)
-        columns_joined = ',\n    '.join(column_defs)
+        columns_joined = ",\n    ".join(column_defs)
         create_sql = f"CREATE TABLE IF NOT EXISTS {schema_qualified}.{table_name} (\n    {columns_joined}\n)"
-        
+
         if dry_run:
             _log(logger, log_mode, f"[import_db][DRY-RUN] 创建表: {schema}.{table_name}")
             _log(logger, log_mode, f"[import_db][DRY-RUN] SQL: {create_sql}")
@@ -380,7 +409,7 @@ def _create_tables(cur, schema: str, db_dir: Path, model: str, dry_run: bool, lo
             try:
                 cur.execute(idx_sql)
             except Exception:
-                pass  # 索引可能已存在
+                pass
 
 
 def _import_table(
@@ -394,7 +423,7 @@ def _import_table(
     log_mode: str,
 ) -> None:
     """使用 COPY 命令导入单个表"""
-    
+
     if not csv_path.exists():
         _log(logger, log_mode, f"[import_db] CSV 不存在：{csv_path} -> 跳过")
         return
@@ -414,18 +443,21 @@ def _import_table(
     # COPY 导入
     if dry_run:
         _log(logger, log_mode, f"[import_db][DRY-RUN] COPY {csv_path} -> {schema}.{table}")
-    else:
-        copy_sql = sql.SQL("COPY {}.{} FROM STDIN WITH (FORMAT CSV, HEADER TRUE, ENCODING 'UTF8')").format(
-            sql.Identifier(schema),
-            sql.Identifier(table),
-        )
-        
-        with open(csv_path, "r", encoding="utf-8-sig") as f:
-            try:
-                cur.copy_expert(copy_sql.as_string(cur), f)
-                _log(logger, log_mode, f"[import_db] 导入成功：{csv_path} -> {schema}.{table}")
-            except Exception as e:
-                raise RuntimeError(f"[import_db] 导入失败：{csv_path} -> {schema}.{table}，错误：{e}") from e
+        return
+
+    copy_sql = sql.SQL(
+        "COPY {}.{} FROM STDIN WITH (FORMAT CSV, HEADER TRUE, ENCODING 'UTF8')"
+    ).format(
+        sql.Identifier(schema),
+        sql.Identifier(table),
+    )
+
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
+        try:
+            cur.copy_expert(copy_sql.as_string(cur), f)
+            _log(logger, log_mode, f"[import_db] 导入成功：{csv_path} -> {schema}.{table}")
+        except Exception as e:
+            raise RuntimeError(f"[import_db] 导入失败：{csv_path} -> {schema}.{table}，错误：{e}") from e
 
 
 def _read_csv_columns(csv_path: Path) -> List[str]:
@@ -438,6 +470,120 @@ def _read_csv_columns(csv_path: Path) -> List[str]:
     except Exception:
         pass
     return []
+
+
+def _import_collect_json(
+    cur,
+    schema: str,
+    model: str,
+    episode_csv: Path,
+    truncate: bool,
+    dry_run: bool,
+    logger,
+    log_mode: str,
+) -> None:
+    """
+    collect_json 导入（优化版）：
+    - 不写临时 CSV
+    - 不做 json.loads 校验
+    - 批量写入（psycopg2.extras.execute_values）
+    - schema 可能包含 '.' 等特殊字符，必须用 sql.Identifier 安全引用
+    """
+    _log(logger, log_mode, f"[import_db] 开始导入 collect_json 表")
+
+    # 获取 obs_download 根目录（假设在 repo_root 下）
+    repo_root = episode_csv.parent.parent.parent  # db/{model}/ -> db/ -> repo_root/
+    obs_download_root = repo_root / "obs_download"
+
+    if not obs_download_root.exists():
+        _log(logger, log_mode, f"[import_db] obs_download 目录不存在: {obs_download_root} -> 跳过 collect_json")
+        return
+
+    # TRUNCATE 清空表
+    if truncate:
+        if dry_run:
+            _log(logger, log_mode, f"[import_db][DRY-RUN] TRUNCATE {schema}.collect_json")
+        else:
+            truncate_sql = sql.SQL("TRUNCATE TABLE {}.{} CASCADE").format(
+                sql.Identifier(schema),
+                sql.Identifier("collect_json"),
+            )
+            cur.execute(truncate_sql)
+            _log(logger, log_mode, f"[import_db] TRUNCATE {schema}.collect_json")
+
+    # 读取 episode CSV（流式）
+    try:
+        f = open(episode_csv, "r", encoding="utf-8-sig", newline="")
+    except Exception as e:
+        _log(logger, log_mode, f"[import_db] 读取 episode CSV 失败: {e}")
+        return
+
+    inserted = 0
+    skipped = 0
+
+    batch: List[Tuple[str, str, str]] = []
+    batch_size = 500  # 可调：500~2000
+
+    # ✅ 用 Identifier 生成带引号的 schema/table
+    # 生成：INSERT INTO "cobotmagicv2.0".collect_json ...
+    insert_sql = sql.SQL(
+        "INSERT INTO {}.{} (episode_id, filename, json) VALUES %s "
+        "ON CONFLICT (episode_id) DO UPDATE SET "
+        "filename = EXCLUDED.filename, "
+        "json = EXCLUDED.json"
+    ).format(
+        sql.Identifier(schema),
+        sql.Identifier("collect_json"),
+    )
+
+    def flush_batch() -> None:
+        nonlocal inserted, batch
+        if not batch:
+            return
+        if dry_run:
+            inserted += len(batch)
+            batch = []
+            return
+
+        # execute_values 支持 Composable SQL（psycopg2.sql.SQL）
+        execute_values(cur, insert_sql, batch, page_size=len(batch))
+        inserted += len(batch)
+        batch = []
+
+    try:
+        reader = csv.DictReader(f)
+        for episode in reader:
+            episode_id = (episode.get("episode_id") or "").strip()
+            taskid = (episode.get("taskid") or "").strip()
+            filename = (episode.get("filename") or "").strip()
+
+            if not episode_id or not taskid:
+                skipped += 1
+                continue
+
+            json_file = obs_download_root / model / taskid / episode_id / f"{episode_id}_collect.json"
+
+            if not json_file.exists():
+                skipped += 1
+                continue
+
+            try:
+                json_content = json_file.read_text(encoding="utf-8")
+            except Exception:
+                skipped += 1
+                continue
+
+            batch.append((episode_id, filename, json_content))
+
+            if len(batch) >= batch_size:
+                flush_batch()
+
+        flush_batch()
+
+    finally:
+        f.close()
+
+    _log(logger, log_mode, f"[import_db] collect_json 导入完成: 成功 {inserted} 条, 跳过 {skipped} 条")
 
 
 def _log(logger, log_mode: str, msg: str) -> None:

@@ -6,6 +6,8 @@ Dash 回调函数
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 import math
+import time
+import json as _json
 
 import pandas as pd
 from dash import Input, Output, State, callback, html, ctx, no_update, ALL
@@ -25,6 +27,84 @@ def get_db_manager() -> DatabaseManager:
     if not db_config:
         raise ValueError("Database configuration not found")
     return DatabaseManager(db_config)
+
+
+# -------------------------
+# 填充 model dropdown
+# -------------------------
+@callback(
+    Output("search-model-dropdown", "options"),
+    Input("search-model-dropdown", "id"),
+)
+def populate_search_model_dropdown(_):
+    """填充构型下拉框"""
+    try:
+        db = get_db_manager()
+        models = db.get_models()
+        return [{"label": m, "value": m} for m in models]
+    except Exception as e:
+        print(f"获取 model 列表失败: {e}")
+        return []
+
+
+# -------------------------
+# Field 搜索功能
+# -------------------------
+@callback(
+    Output("selected-fields-store", "data", allow_duplicate=True),
+    Output("current-model-store", "data", allow_duplicate=True),
+    Output("view-mode-store", "data", allow_duplicate=True),
+    Input("field-search-btn", "n_clicks"),
+    State("search-model-dropdown", "value"),
+    State("field-search-input", "value"),
+    prevent_initial_call=True,
+)
+def search_field(n_clicks, model, field_text):
+    """搜索指定的 field"""
+    if not n_clicks or not model or not field_text:
+        return no_update, no_update, no_update
+    
+    field_text = field_text.strip()
+    if not field_text:
+        return no_update, no_update, no_update
+    
+    try:
+        db = get_db_manager()
+        schema = qident(model)
+        
+        # 查询该 field 是否存在
+        query = f"""
+        SELECT field_id, field, field_name, rule_code, type
+        FROM {schema}.field
+        WHERE field = %s
+        """
+        df = db.execute_query(query, (field_text,))
+        
+        if df.empty:
+            print(f"[搜索] 未找到 field: {field_text} in model: {model}")
+            return no_update, no_update, no_update
+        
+        # 获取第一个匹配结果
+        row = df.iloc[0]
+        field_info = {
+            "model": model,
+            "field_id": int(row["field_id"]),
+            "field": row["field"],
+            "field_name": row["field_name"] if row["field_name"] else row["field"],
+            "rule_code": row["rule_code"],
+            "type": row["type"],
+        }
+        
+        print(f"[搜索] 找到 field: {field_text}, field_id: {field_info['field_id']}, model: {model}")
+        
+        # 返回单个字段，切换到 single 模式
+        return [field_info], model, "single"
+        
+    except Exception as e:
+        import traceback
+        print(f"[搜索] 失败: {e}")
+        print(traceback.format_exc())
+        return no_update, no_update, no_update
 
 
 def _calc_time_range(value: str) -> Optional[Tuple[str, str]]:
@@ -203,8 +283,7 @@ def toggle_model(n_clicks_list, expanded_model, model_ids):
 
 
 # -------------------------
-# single 模式：点击 rule 展开/折叠字段列表（但这里我们懒加载字段：点击 rule 时才拉字段并填充 field-list）
-# 注意：为了最小改动，我们单独写一个回调来填充 field-list children
+# single 模式：点击 rule 展开/折叠字段列表（懒加载字段）
 # -------------------------
 @callback(
     Output({"type": "field-list", "model": ALL, "rule": ALL}, "children"),
@@ -219,6 +298,7 @@ def toggle_model(n_clicks_list, expanded_model, model_ids):
 def toggle_rule_and_render_fields(n_clicks_list, rule_ids, expanded_rule, view_mode):
     # helper：为 ALL 输出构造 no_update 列表
     n = len(rule_ids) if rule_ids else 0
+
     def _no_updates():
         return [no_update] * n, [no_update] * n, no_update
 
@@ -271,7 +351,7 @@ def toggle_rule_and_render_fields(n_clicks_list, rule_ids, expanded_rule, view_m
 
 
 # -------------------------
-# single 模式：字段选择（保持你原逻辑）
+# single 模式：字段选择
 # -------------------------
 @callback(
     Output("selected-fields-store", "data", allow_duplicate=True),
@@ -478,7 +558,7 @@ def update_selected_info_display(
         try:
             episode_id = episode_data.get("episode_id")
             field_id = episode_data.get("field_id")
-            
+
             if episode_id:
                 schema = qident(current_model)
                 query = f"""
@@ -495,7 +575,7 @@ def update_selected_info_display(
                     area_val = str(episode_info.get("area", "N/A"))
                     collected_at_val = str(episode_info["collected_at"])
                     filename_val = str(episode_info["filename"])
-            
+
             # 获取当前字段
             if field_id:
                 schema = qident(current_model)
@@ -523,6 +603,23 @@ def update_selected_info_display(
         ]
     )
 
+    # 如果有选中的 episode，显示下载按钮
+    if episode_id_val:
+        info_items.append(
+            html.Div(
+                [
+                    dbc.Button(
+                        [html.I(className="bi bi-download me-2"), "下载 JSON"],
+                        id="download-json-btn",
+                        color="primary",
+                        size="sm",
+                        className="mt-2",
+                    )
+                ],
+                className="mt-2",
+            )
+        )
+
     return html.Div(info_items, className="p-2 bg-light rounded")
 
 
@@ -536,16 +633,21 @@ def update_selected_info_display(
     Input("time-range-dropdown", "value"),
     Input("sort-by-dropdown", "value"),
     Input("group-by-dropdown", "value"),
+    Input("sampling-active-store", "data"),
+    Input("filtered-areas-store", "data"),
     State("view-mode-store", "data"),
     State("selected-rule-store", "data"),
+    State("sampled-episodes-store", "data"),
 )
-def update_chart(selected_fields, time_range, sort_by, group_by, view_mode, selected_rule):
+def update_chart(selected_fields, time_range, sort_by, group_by, sampling_active, filtered_areas, view_mode, selected_rule, sampled_episodes):
     if not selected_fields:
         if view_mode == "multi":
             return html.Div("请从左侧导航树选择 Rule Code", className="text-muted text-center mt-5"), None
         return html.Div("请从左侧导航树选择字段", className="text-muted text-center mt-5"), None
 
     try:
+        t0 = time.perf_counter()
+
         db = get_db_manager()
         model = selected_fields[0]["model"]
         field_ids = [int(f["field_id"]) for f in selected_fields]
@@ -554,22 +656,43 @@ def update_chart(selected_fields, time_range, sort_by, group_by, view_mode, sele
         time_range_tuple = _calc_time_range(time_range)
 
         # 拉数据
+        t_db0 = time.perf_counter()
         df = db.get_field_data(model, field_ids, time_range_tuple)
+        t_db1 = time.perf_counter()
+
+        # 应用抽样过滤
+        if sampling_active and sampled_episodes:
+            original_len = len(df)
+            df = df[df['episode_id'].isin(sampled_episodes)]
+            print(f"[抽样过滤] 原始数据: {original_len}, 过滤后: {len(df)}")
+        
+        # 应用地区过滤（过滤掉指定地区）
+        if filtered_areas and len(filtered_areas) > 0:
+            original_len = len(df)
+            df = df[~df['area'].isin(filtered_areas)]
+            print(f"[地区过滤] 过滤掉 {filtered_areas}, 原始数据: {original_len}, 过滤后: {len(df)}")
+
         if df.empty:
             return html.Div("未找到符合条件的数据", className="text-muted text-center mt-5"), None
 
         # field 信息批量获取（包含 field、field_name 和 type）
+        t_meta0 = time.perf_counter()
         field_info_map = db.get_field_info_batch(model, field_ids)
-        
+
+        # 用 field（不是 field_name）来查询阈值
+        fields_for_thresholds = [field_info_map[fid]["field"] for fid in field_ids if fid in field_info_map]
+        thresholds_map = db.get_thresholds_batch(model, fields_for_thresholds)
+        t_meta1 = time.perf_counter()
+
         # 根据字段类型转换 value
         def convert_value(row):
             fid = row["field_id"]
             if fid not in field_info_map:
                 return pd.NA
-            
+
             field_type = field_info_map[fid].get("type", "numeric")
             value = row["value"]
-            
+
             if field_type == "non_numeric":
                 # non_numeric: 空或不存在 → 1, 存在且不为空 → 0
                 if pd.isna(value) or value == "" or value == "N/A":
@@ -582,15 +705,14 @@ def update_chart(selected_fields, time_range, sort_by, group_by, view_mode, sele
                     return float(value)
                 except (ValueError, TypeError):
                     return pd.NA
-        
+
+        t_conv0 = time.perf_counter()
         df["value"] = df.apply(convert_value, axis=1)
         df = df.dropna(subset=["value"])
+        t_conv1 = time.perf_counter()
+
         if df.empty:
             return html.Div("未找到可用的数值数据（value 全部无法转为数值）", className="text-muted text-center mt-5"), None
-        
-        # 用 field（不是 field_name）来查询阈值
-        fields_for_thresholds = [field_info_map[fid]["field"] for fid in field_ids if fid in field_info_map]
-        thresholds_map = db.get_thresholds_batch(model, fields_for_thresholds)
 
         field_info_list = []
         for fid in field_ids:
@@ -607,8 +729,13 @@ def update_chart(selected_fields, time_range, sort_by, group_by, view_mode, sele
             )
 
         # multi：先算全局 episode 顺序（统一 sort/group）
+        t_fig0 = time.perf_counter()
+        t_epi0 = time.perf_counter()
         if view_mode == "multi":
             df = _compute_global_episode_index(df, sort_by=sort_by, group_by=group_by)
+        t_epi1 = time.perf_counter()
+
+        if view_mode == "multi":
             chart = create_scatter_plot_multi_subplots(
                 df,
                 field_info_list,
@@ -618,8 +745,41 @@ def update_chart(selected_fields, time_range, sort_by, group_by, view_mode, sele
             )
         else:
             chart = create_scatter_plot(df, field_info_list, sort_by, group_by)
+        t_fig1 = time.perf_counter()
 
+        # 统计面板
+        t_stats0 = time.perf_counter()
         stats = create_statistics_cards(df, field_info_list, group_by)
+        t_stats1 = time.perf_counter()
+
+        # figure 大小 / trace 数（关键指标）
+        fig_bytes_mb = None
+        trace_count = None
+        try:
+            fig_json = chart.figure.to_plotly_json()
+            fig_bytes_mb = len(_json.dumps(fig_json, ensure_ascii=False)) / (1024 * 1024)
+            trace_count = len(chart.figure.data)
+        except Exception:
+            pass
+
+        t1 = time.perf_counter()
+
+        # perf 日志（你也可以换成 logger.info）
+        print(
+            "[perf] "
+            f"model={model} mode={view_mode} fields={len(field_ids)} "
+            f"rows={len(df)} "
+            f"db={t_db1 - t_db0:.3f}s "
+            f"meta={t_meta1 - t_meta0:.3f}s "
+            f"convert={t_conv1 - t_conv0:.3f}s "
+            f"episode_index={t_epi1 - t_epi0:.3f}s "
+            f"figure={t_fig1 - t_fig0:.3f}s "
+            f"stats={t_stats1 - t_stats0:.3f}s "
+            f"total={t1 - t0:.3f}s "
+            f"traces={trace_count} "
+            f"figMB={fig_bytes_mb}"
+        )
+
         return chart, stats
 
     except Exception as e:
@@ -646,3 +806,155 @@ def capture_click_data(click_data):
             return {"episode_id": customdata}
 
     return no_update
+
+
+@callback(
+    Output("filtered-areas-store", "data"),
+    Output("area-filter-input", "value"),
+    Input("apply-area-filter-btn", "n_clicks"),
+    Input("clear-area-filter-btn", "n_clicks"),
+    State("area-filter-input", "value"),
+    prevent_initial_call=True,
+)
+def handle_area_filter(apply_clicks, clear_clicks, filter_text):
+    """处理地区过滤"""
+    triggered_id = ctx.triggered_id
+    
+    # 清除按钮
+    if triggered_id == "clear-area-filter-btn":
+        return [], ""
+    
+    # 应用过滤
+    if triggered_id == "apply-area-filter-btn":
+        if not filter_text or not filter_text.strip():
+            return [], ""
+        
+        # 解析逗号分隔的地区列表
+        areas = [area.strip() for area in filter_text.split(",") if area.strip()]
+        print(f"[地区过滤] 过滤掉的地区: {areas}")
+        return areas, filter_text
+    
+    return no_update, no_update
+
+
+@callback(
+    Output("sampled-episodes-store", "data"),
+    Output("sampling-active-store", "data"),
+    Input("apply-sampling-btn", "n_clicks"),
+    Input("reset-sampling-btn", "n_clicks"),
+    State("sampling-ratio-input", "value"),
+    State("current-model-store", "data"),
+    State("selected-fields-store", "data"),
+    prevent_initial_call=True,
+)
+def handle_sampling(apply_clicks, reset_clicks, ratio, current_model, selected_fields):
+    """处理抽样按钮点击"""
+    import random
+    
+    triggered_id = ctx.triggered_id
+    
+    # 重置按钮
+    if triggered_id == "reset-sampling-btn":
+        return None, False
+    
+    # 应用抽样
+    if triggered_id == "apply-sampling-btn":
+        if not current_model or not selected_fields:
+            return no_update, no_update
+        
+        if not ratio or ratio <= 0 or ratio > 100:
+            return no_update, no_update
+        
+        try:
+            db = get_db_manager()
+            schema = qident(current_model)
+            
+            # 获取所有 episode，按 taskid 分组
+            query = f"""
+            SELECT DISTINCT episode_id, taskid
+            FROM {schema}.episode
+            ORDER BY taskid, episode_id
+            """
+            df = db.execute_query(query)
+            
+            if df.empty:
+                return None, False
+            
+            # 按 taskid 分组抽样
+            sampled_episodes = []
+            ratio_decimal = ratio / 100.0
+            
+            for taskid in df['taskid'].unique():
+                taskid_episodes = df[df['taskid'] == taskid]['episode_id'].tolist()
+                sample_size = max(1, int(len(taskid_episodes) * ratio_decimal))
+                sampled = random.sample(taskid_episodes, sample_size)
+                sampled_episodes.extend(sampled)
+            
+            print(f"[抽样] 总 episode 数: {len(df)}, 抽样后: {len(sampled_episodes)}, 比例: {ratio}%")
+            return sampled_episodes, True
+            
+        except Exception as e:
+            print(f"抽样失败: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return no_update, no_update
+    
+    return no_update, no_update
+
+
+@callback(
+    Output("download-json", "data"),
+    Input("download-json-btn", "n_clicks"),
+    State("selected-episode-store", "data"),
+    State("current-model-store", "data"),
+    prevent_initial_call=True,
+)
+def download_json(n_clicks, episode_data, current_model):
+    import json
+
+    if not n_clicks or not episode_data or not current_model:
+        return no_update
+
+    episode_id = episode_data.get("episode_id")
+    if not episode_id:
+        return no_update
+
+    try:
+        db = get_db_manager()
+        json_data = db.get_collect_json(current_model, episode_id)
+
+        if not json_data:
+            print(f"[download_json] 未找到 JSON 数据: episode_id={episode_id}, model={current_model}")
+            return no_update
+
+        # 获取 JSON 内容和文件名
+        json_content = json_data.get("json")
+        filename = json_data.get("filename", f"{episode_id}_collect.json")
+
+        print(f"[download_json] json_content type: {type(json_content)}")
+        print(f"[download_json] filename: {filename}")
+
+        # 确保文件名以 .json 结尾
+        if not filename.endswith(".json"):
+            filename = f"{episode_id}_collect.json"
+
+        # 将 JSON 内容转换为字符串
+        if isinstance(json_content, (dict, list)):
+            json_str = json.dumps(json_content, ensure_ascii=False, indent=2)
+        elif isinstance(json_content, str):
+            json_str = json_content
+        else:
+            print(f"[download_json] 警告：未知类型 {type(json_content)}")
+            json_str = str(json_content)
+
+        print(f"[download_json] json_str type: {type(json_str)}, length: {len(json_str)}")
+
+        result = {"content": json_str, "filename": filename}
+        print(f"[download_json] 返回结果: content type={type(result['content'])}, filename={result['filename']}")
+        return result
+
+    except Exception as e:
+        import traceback
+        print(f"下载 JSON 失败: {e}")
+        print(traceback.format_exc())
+        return no_update
