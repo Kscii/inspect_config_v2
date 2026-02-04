@@ -256,3 +256,21 @@ class DatabaseManager:
         if df.empty:
             return f"field_{field_id}"
         return df.iloc[0]["field"]
+
+    def get_collect_json(self, model: str, episode_id: str) -> Optional[Dict[str, Any]]:
+        """获取指定 episode 的 collect_json 数据"""
+        schema = qident(model)
+        query = f"""
+        SELECT episode_id, filename, json
+        FROM {schema}.collect_json
+        WHERE episode_id = %s
+        """
+        df = self.execute_query(query, (episode_id,))
+        if df.empty:
+            return None
+        row = df.iloc[0]
+        return {
+            "episode_id": row["episode_id"],
+            "filename": row["filename"],
+            "json": row["json"]
+        }

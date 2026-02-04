@@ -27,13 +27,48 @@ def create_layout():
                     dbc.Col(
                         [
                             html.H5("导航树", className="mb-3"),
+                            
+                            # Field 搜索功能
+                            dbc.Card(
+                                [
+                                    dbc.CardBody(
+                                        [
+                                            html.Label("Field 搜索：", className="fw-bold mb-2"),
+                                            dcc.Dropdown(
+                                                id="search-model-dropdown",
+                                                placeholder="选择构型...",
+                                                clearable=True,
+                                                style={"marginBottom": "8px"},
+                                            ),
+                                            dbc.InputGroup(
+                                                [
+                                                    dbc.Input(
+                                                        id="field-search-input",
+                                                        placeholder="输入完整 field 名称...",
+                                                        type="text",
+                                                    ),
+                                                    dbc.Button(
+                                                        "搜索",
+                                                        id="field-search-btn",
+                                                        color="primary",
+                                                    ),
+                                                ],
+                                                size="sm",
+                                            ),
+                                        ],
+                                        className="p-2",
+                                    ),
+                                ],
+                                className="mb-3",
+                            ),
+                            
                             dcc.Loading(
                                 id="loading-tree",
                                 type="default",
                                 children=[
                                     html.Div(
                                         id="navigation-tree",
-                                        style={"overflowY": "auto", "maxHeight": "1000px"},
+                                        style={"overflowY": "auto", "maxHeight": "800px"},
                                     )
                                 ],
                             ),
@@ -49,7 +84,7 @@ def create_layout():
                                 [
                                     dbc.CardBody(
                                         [
-                                            # 视图模式选择
+                                            # 视图模式选择和抽样控件
                                             dbc.Row(
                                                 [
                                                     dbc.Col(
@@ -65,10 +100,82 @@ def create_layout():
                                                                 inline=True,
                                                             ),
                                                         ],
-                                                        width=12,
-                                                    )
+                                                        width=4,
+                                                    ),
+                                                    dbc.Col(
+                                                        [
+                                                            html.Label("抽样比例（每个TaskID）："),
+                                                            dbc.InputGroup(
+                                                                [
+                                                                    dbc.Input(
+                                                                        id="sampling-ratio-input",
+                                                                        type="number",
+                                                                        min=1,
+                                                                        max=100,
+                                                                        step=1,
+                                                                        value=100,
+                                                                        placeholder="1-100",
+                                                                        size="sm",
+                                                                    ),
+                                                                    dbc.InputGroupText("%"),
+                                                                    dbc.Button(
+                                                                        "应用抽样",
+                                                                        id="apply-sampling-btn",
+                                                                        color="primary",
+                                                                        size="sm",
+                                                                    ),
+                                                                    dbc.Button(
+                                                                        "重置",
+                                                                        id="reset-sampling-btn",
+                                                                        color="secondary",
+                                                                        outline=True,
+                                                                        size="sm",
+                                                                    ),
+                                                                ],
+                                                                size="sm",
+                                                            ),
+                                                        ],
+                                                        width=8,
+                                                    ),
                                                 ],
                                                 className="mb-2",
+                                            ),
+
+                                            # 地区过滤器
+                                            dbc.Row(
+                                                [
+                                                    dbc.Col(
+                                                        [
+                                                            html.Label("过滤地区（逗号分隔，不显示）："),
+                                                            dbc.InputGroup(
+                                                                [
+                                                                    dbc.Input(
+                                                                        id="area-filter-input",
+                                                                        type="text",
+                                                                        placeholder="例：shanghai,beijing",
+                                                                        size="sm",
+                                                                    ),
+                                                                    dbc.Button(
+                                                                        "应用过滤",
+                                                                        id="apply-area-filter-btn",
+                                                                        color="primary",
+                                                                        size="sm",
+                                                                    ),
+                                                                    dbc.Button(
+                                                                        "清除",
+                                                                        id="clear-area-filter-btn",
+                                                                        color="secondary",
+                                                                        outline=True,
+                                                                        size="sm",
+                                                                    ),
+                                                                ],
+                                                                size="sm",
+                                                            ),
+                                                        ],
+                                                        width=12,
+                                                    ),
+                                                ],
+                                                className="mb-3",
                                             ),
 
                                             # 时间范围、排序和分类选择
@@ -211,6 +318,16 @@ def create_layout():
             dcc.Store(id="selected-rule-store", data=None),  # {"model":..., "rule":...}
             dcc.Store(id="multi-page-store", data={"page": 1}),
             dcc.Store(id="multi-total-pages-store", data=1),
+            
+            # 抽样相关
+            dcc.Store(id="sampled-episodes-store", data=None),  # 存储抽样的 episode_id 列表
+            dcc.Store(id="sampling-active-store", data=False),  # 是否启用抽样
+            
+            # 地区过滤相关
+            dcc.Store(id="filtered-areas-store", data=[]),  # 存储需要过滤的地区列表
+            
+            # 下载组件
+            dcc.Download(id="download-json"),
         ],
         fluid=True,
         className="p-4",

@@ -75,24 +75,25 @@ global:
 
   rule_id_to_model_presets:
     shanghai_dev:
-      175: "A2"
+      181: "青龙"
+      185: "KUAVO_4PRO_LB_GRIPPER"
+      184: "KUAVO_4PRO_LB_GRIPPER_DEXHAND"
+      186: "KUAVO_4PRO_GRIPPER_DEXHAND"
+      179: "GR2"
+      183: "KUAVO_4PRO_GRIPPER"
+      190: "QINGLOONGV2.5"
+      191: "QINGLOONGV2.5-TACTILE"
+      187: "S1"
+      180: "UR"
       176: "A2D"
       177: "DWHEEL-TACTILE"
       178: "FRANKA"
-      179: "GR2"
-      180: "UR"
-      182: "COBOTMAGICV2.0"
-      183: "KUAVO_4PRO_GRIPPER"
-      187: "S1"
-      188: "PIKA"
       189: "R1"
-      190: "QINGLOONGV2.5"
-      191: "QINGLOONGV2.5-TACTILE"
       194: "BUTLERV3"
-      181: "青龙"
-      # 184: "KUAVO_4PRO_LB_GRIPPER_DEXHAND"
-      185: "KUAVO_4PRO_LB_GRIPPER"  
-      # 186: "KUAVO_4PRO_GRIPPER_DEXHAND"
+      182: "COBOTMAGICV2.0"
+      195: "DWHEEL"
+      188: "PIKA"
+      175: "A2"
     shanghai_prod:
       204: "A2"
       203: "A2D"
@@ -137,10 +138,16 @@ global:
 # Step: download（负责：下载/搬运/合并/分组；并自动发现构型）
 # ==============================================================================
 download:
-  # 当前使用哪个预设（prod_all/shanghai_dev/shanghai_prod/zhengzhou_prod）
+  # 当前使用哪个预设（prod_all/all/shanghai_dev/shanghai_prod/zhengzhou_prod）
+  # - prod_all: 使用 prod_all_presets 定义的生产环境列表
+  # - all: 从 global.presets 中的所有 bucket 逐个下载
+  # - 其他: 单一 preset 名称
   current_preset: "shanghai_dev"
 
   prod_all_presets: [shanghai_prod, zhengzhou_prod]
+  
+  # all 模式下使用的 preset 列表（为空则自动使用 global.presets 的所有 key）
+  all_presets: []
 
   # OBS 前缀（末尾带 / 不带都行）
   obs_prefix: "data-collector-svc/collect/"
@@ -283,6 +290,9 @@ selectors:
     - models: ["QINGLOONGV2.5"]
       contains: ["action/end>"]
 
+    - models: ["QINGLOONGV2.5"]
+      contains: ["[<name>=<velocity>]"]
+
     - models: ["S1"]
       contains: ["b'"]
 
@@ -331,15 +341,16 @@ selectors:
   # 并集模式
   use_union_of_all_samples: false
 
-  # 并集模式下的最小样本数过滤
+  # 并集模式下的最小样本比例过滤
   enable_union_min_sample_filter: false
   
-  # 全局默认阈值：字段至少在 N 个样本中出现才保留
-  union_min_sample_count: 300
+  # 全局默认阈值：字段至少在 X% 的样本中出现才保留（0.0-1.0）
+  # 例如：0.8 表示至少在 80% 的样本中出现
+  union_min_sample_ratio: 0.8
   
   # 按构型覆盖阈值（可选）
-  # union_min_sample_count_by_model:
-    # "构型": 10
+  # union_min_sample_ratio_by_model:
+    # "构型": 0.5
 
   # 随机一致性检查（只在 generate_selectors_txt 时触发）
   enable_random_consistency_check: false

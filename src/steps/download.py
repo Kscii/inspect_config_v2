@@ -60,11 +60,21 @@ def run_step(
     current_preset = str(step_cfg["current_preset"])
 
     # prod_all：按顺序逐个 preset 下载
+    # all：从 global.presets 的所有 preset 下载
     preset_list: List[str]
     if current_preset == "prod_all":
         preset_list = list(step_cfg.get("prod_all_presets") or [])
         if not preset_list:
             raise ValueError("[download] current_preset=prod_all but download.prod_all_presets is empty")
+    elif current_preset == "all":
+        all_presets = step_cfg.get("all_presets") or []
+        if all_presets:
+            preset_list = list(all_presets)
+        else:
+            # 自动使用 global.presets 的所有 key
+            preset_list = list(presets.keys())
+        if not preset_list:
+            raise ValueError("[download] current_preset=all but no presets found in global.presets")
     else:
         preset_list = [current_preset]
 
@@ -188,7 +198,7 @@ def run_step(
             raise ValueError(f"[download] missing global.obsutilconfig_paths for region={region} (preset={preset_name})")
 
         # 目标目录
-        if current_preset == "prod_all":
+        if current_preset in ("prod_all", "all"):
             dst_root = stage_root / preset_name
         else:
             dst_root = repo_root
@@ -225,7 +235,7 @@ def run_step(
     if obs_download_root.exists() and obs_download_root.is_dir():
         sources.append((obs_download_root, None))
 
-    if current_preset == "prod_all":
+    if current_preset in ("prod_all", "all"):
         # staging：每个 preset 的 dst_root/collect 作为来源
         for preset_name, _bucket, _cfg, dst_root in download_jobs:
             staging_collect = dst_root / "collect"
@@ -258,7 +268,7 @@ def run_step(
     if not sources:
         raise FileNotFoundError(
             f"本地未找到可用数据目录：既没有 {obs_download_root}，"
-            f"{'也没有 ' + str(collect_root) if (not csv_mode and current_preset != 'prod_all') else ''}，"
+            f"{'也没有 ' + str(collect_root) if (not csv_mode and current_preset not in ('prod_all', 'all')) else ''}，"
             f"也没有 staging/CSV leaf 目录。 (skip_download={skip_download}, csv_mode={csv_mode}, current_preset={current_preset})"
         )
 
@@ -272,7 +282,7 @@ def run_step(
 
     for src, source_preset in sources:
         # 方法1：非 CSV 模式下，collect_root 一定是“容器目录”，禁止把它当作 task_dir 整体搬走
-        if (current_preset != "prod_all") and (not csv_mode) and (src.resolve() == collect_root.resolve()):
+        if (current_preset not in ("prod_all", "all")) and (not csv_mode) and (src.resolve() == collect_root.resolve()):
             _log(logger, log_mode, f"[download] non-csv: treat collect_root as container only: {src}")
 
             task_dirs = _list_direct_task_dirs(src, taskid_re=taskid_re, filter_taskid_dirs=filter_taskid_dirs)
@@ -297,9 +307,9 @@ def run_step(
                     model_set.add(moved_model)
             continue
 
-        # 方法2：prod_all 模式下，staging_collect 一定是"容器目录"，强制按容器处理
-        if (current_preset == "prod_all") and (source_preset is not None):
-            _log(logger, log_mode, f"[download] prod_all: treat staging_collect as container only: {src} (source_preset={source_preset})")
+        # 方法2：prod_all/all 模式下，staging_collect 一定是"容器目录"，强制按容器处理
+        if (current_preset in ("prod_all", "all")) and (source_preset is not None):
+            _log(logger, log_mode, f"[download] {current_preset}: treat staging_collect as container only: {src} (source_preset={source_preset})")
 
             task_dirs = _list_direct_task_dirs(src, taskid_re=taskid_re, filter_taskid_dirs=filter_taskid_dirs)
             if not task_dirs:
