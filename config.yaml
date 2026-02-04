@@ -94,20 +94,24 @@ global:
       185: "KUAVO_4PRO_LB_GRIPPER"  
       # 186: "KUAVO_4PRO_GRIPPER_DEXHAND"
     shanghai_prod:
-      187: "BUTLERV3"
-      188: "QINGLOONGV2.5-TACTILE"
-      189: "QINGLOONGV2.5"
-      190: "R1"
-      191: "PIKA"
-      192: "S1"
-      196: "KUAVO_4PRO_GRIPPER"
-      197: "COBOTMAGICV2.0"
-      199: "UR"
-      200: "GR2"
-      201: "FRANKA"
-      202: "DWHEEL-TACTILE"
-      203: "A2D"
       204: "A2"
+      203: "A2D"
+      202: "DWHEEL-TACTILE"
+      201: "FRANKA"
+      200: "GR2"
+      199: "UR"
+      198: "青龙"
+      197: "COBOTMAGICV2.0"
+      196: "KUAVO_4PRO_GRIPPER"
+      195: "KUAVO_4PRO_LB_GRIPPER_DEXHAND"
+      194: "KUAVO_4PRO_LB_GRIPPER"
+      193: "KUAVO_4PRO_GRIPPER_DEXHAND"
+      192: "S1"
+      191: "PIKA"
+      190: "R1"
+      189: "QINGLOONGV2.5"
+      188: "QINGLOONGV2.5-TACTILE"
+      187: "BUTLERV3"
     zhengzhou_prod:
       148: "BUTLERV3"
       149: "QINGLOONGV2.5-TACTILE"
@@ -282,7 +286,7 @@ selectors:
     - models: ["S1"]
       contains: ["b'"]
 
-    - models: ["PIKA"]
+    - models: ["PIKA", "COBOTMAGICV2.0"] # 后续需要修改cobotmagic的joint_motion_interval在collect阶段的规则，不使用robot数据
       contains: [".<report>.[<ruleCode>=<joint_motion_interval>].<modelInfo>.<total_second_sum>"]
     
     - models: ["R1"]
@@ -600,6 +604,8 @@ find_range_full:
 # Step: test_range（负责：区间命中检测，写回 ranges.csv 并输出统计）
 # ==============================================================================
 test_range:
+  # 是否同时测试 find_range_full 的区间
+  enable_full: false  
   output_ranges_csv: null
   treat_nan_as_fail: true
   fields_mode: "range_only"
@@ -688,7 +694,7 @@ import_db:
   create_tables_if_missing: true
   
   # 是否导入 thresholds_full
-  enable_full: false
+  enable_full: true
   
   # db CSV 目录名
   db_dirname: "db"
@@ -777,7 +783,7 @@ update_rule_api:
   # 仅更新 Base Config（跳过 Full Config 和 Path 更新）
   # - true: 只执行 Base Config 更新（仅发送 {"id": xxx, "config": "..."}）
   # - false: 执行完整更新流程（Base + Full + csvPath + csvFullPath）
-  only_update_base_config: true
+  only_update_base_config: false
 
 
 # ==============================================================================
