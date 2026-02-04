@@ -243,6 +243,7 @@ def _create_tables(cur, schema: str, db_dir: Path, model: str, dry_run: bool, lo
         "field": {
             "field_id": "BIGINT",
             "field": "TEXT",
+            "field_name": "TEXT",
             "rule_code": "TEXT",
             "type": "TEXT",
         },

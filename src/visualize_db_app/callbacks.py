@@ -4,16 +4,19 @@ Dash 回调函数
 """
 
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from typing import Dict, Any, List, Optional, Tuple
+import math
 
 import pandas as pd
-import plotly.graph_objects as go
 from dash import Input, Output, State, callback, html, ctx, no_update, ALL
 import dash_bootstrap_components as dbc
 
 from .app import app
-from .database import DatabaseManager
-from .charts import create_scatter_plot, create_statistics_cards
+from .database import DatabaseManager, qident
+from .charts import create_scatter_plot, create_scatter_plot_multi_subplots, create_statistics_cards
+
+
+MULTI_PAGE_SIZE = 9   # 每页 9 张（3x3）
 
 
 def get_db_manager() -> DatabaseManager:
@@ -24,44 +27,112 @@ def get_db_manager() -> DatabaseManager:
     return DatabaseManager(db_config)
 
 
+def _calc_time_range(value: str) -> Optional[Tuple[str, str]]:
+    if value == "all":
+        return None
+    end = datetime.now()
+    if value == "7d":
+        start = end - timedelta(days=7)
+    elif value == "30d":
+        start = end - timedelta(days=30)
+    elif value == "90d":
+        start = end - timedelta(days=90)
+    else:
+        return None
+    return (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+
+
+def _compute_global_episode_index(df: pd.DataFrame, sort_by: str, group_by: str) -> pd.DataFrame:
+    """
+    multi 模式：基于 episode 维度先算全局顺序，再回填到 df 中。
+    统一 sort_by / group_by 生效。
+    """
+    if df.empty:
+        return df
+
+    # episode 维 unique
+    epi = df[["episode_id", "sn", "taskid", "area", "collected_at"]].drop_duplicates().copy()
+    if not pd.api.types.is_datetime64_any_dtype(epi["collected_at"]):
+        epi["collected_at"] = pd.to_datetime(epi["collected_at"], utc=True, errors="coerce")
+
+    # 排序键（统一）
+    sort_keys: List[str] = []
+    if sort_by == "sn":
+        sort_keys.append("sn")
+    elif sort_by == "taskid":
+        sort_keys.append("taskid")
+    elif sort_by == "area":
+        sort_keys.append("area")
+    else:
+        sort_keys.append("collected_at")
+
+    # 如果 group_by 非时间分组，也把分组字段纳入排序键（保证组内稳定）
+    time_groups = {"day", "week", "month"}
+    if group_by not in time_groups:
+        if group_by == "sn" and "sn" not in sort_keys:
+            sort_keys.append("sn")
+        elif group_by == "taskid" and "taskid" not in sort_keys:
+            sort_keys.append("taskid")
+        elif group_by == "area" and "area" not in sort_keys:
+            sort_keys.append("area")
+
+    if "collected_at" not in sort_keys:
+        sort_keys.append("collected_at")
+
+    epi = epi.sort_values(sort_keys, kind="mergesort")  # 稳定排序
+    epi["episode_index"] = range(1, len(epi) + 1)
+
+    # 回填
+    df = df.merge(epi[["episode_id", "episode_index"]], on="episode_id", how="left")
+    return df
+
+
+# -------------------------
+# 视图模式：radio -> store，并清理选择和折叠状态
+# -------------------------
+@callback(
+    Output("view-mode-store", "data"),
+    Output("selected-fields-store", "data", allow_duplicate=True),
+    Output("selected-rule-store", "data", allow_duplicate=True),
+    Output("multi-page-store", "data", allow_duplicate=True),
+    Output("current-model-store", "data", allow_duplicate=True),
+    Output("expanded-model-store", "data", allow_duplicate=True),
+    Output("expanded-rule-store", "data", allow_duplicate=True),
+    Input("view-mode-radio", "value"),
+    prevent_initial_call=True,
+)
+def set_view_mode(mode: str):
+    # 切模式时清空选择和折叠状态，避免 single/multi 状态互相污染
+    if mode not in ("single", "multi"):
+        mode = "single"
+    return mode, [], None, {"page": 1}, None, None, None
+
+
+# -------------------------
+# 导航树渲染：响应视图模式和折叠状态变化
+# -------------------------
 @callback(
     Output("navigation-tree", "children"),
-    Input("navigation-tree", "id"),  # 触发初始加载
+    Input("navigation-tree", "id"),
+    Input("view-mode-store", "data"),
+    Input("expanded-model-store", "data"),
+    State("expanded-rule-store", "data"),
 )
-def render_navigation_tree(_):
-    """渲染导航树"""
+def render_navigation_tree(_, view_mode, expanded_model, expanded_rule):
     try:
         db = get_db_manager()
-        models = db.get_models()  # 返回小写的 schema 名称，如 'a2', 'gr2'
-        
+        models = db.get_models()
         if not models:
             return html.Div("未找到任何模型", className="text-muted")
-        
+
         tree_items = []
         for model in models:
-            # model 是小写的 schema 名称（如 'a2'），用于数据库查询
-            # 显示时也使用原始名称（保持和数据库一致）
             model_display = model
-            
-            # 获取该 model 下的所有 rule_code
             rule_codes = db.get_rule_codes(model)
-            
+
             rule_items = []
             for rule_code in rule_codes:
-                # 获取该 rule_code 下的所有字段
-                fields = db.get_fields(model, rule_code)
-                
-                field_items = [
-                    dbc.ListGroupItem(
-                        f["field"],
-                        id={"type": "field-item", "model": model, "rule": rule_code, "field_id": f["field_id"]},
-                        action=True,
-                        className="ps-5",
-                        style={"fontSize": "0.85rem"},
-                    )
-                    for f in fields
-                ]
-                
+                # rule 项
                 rule_items.append(
                     html.Div(
                         [
@@ -72,197 +143,349 @@ def render_navigation_tree(_):
                                 className="ps-4",
                                 style={"fontWeight": "500"},
                             ),
-                            html.Div(field_items, id={"type": "field-list", "model": model, "rule": rule_code}, style={"display": "none"}),
+                            # 保留 field-list 容器：
+                            # - single: 会填充真实 field-item
+                            # - multi: 保持空且隐藏（无法展开到字段）
+                            html.Div(
+                                [],
+                                id={"type": "field-list", "model": model, "rule": rule_code},
+                                style={"display": "none"},
+                            ),
                         ]
                     )
                 )
-            
+
+            # 根据 expanded_model 决定 rule-list 是否显示
+            rule_list_style = {"display": "block"} if expanded_model == model else {"display": "none"}
+
             tree_items.append(
                 html.Div(
                     [
                         dbc.ListGroupItem(
-                            f"🤖 {model_display}",  # 显示大写
-                            id={"type": "model-item", "model": model},  # 存储小写
+                            f"{model_display}",
+                            id={"type": "model-item", "model": model},
                             action=True,
                             color="primary",
                             className="fw-bold",
                         ),
-                        html.Div(rule_items, id={"type": "rule-list", "model": model}, style={"display": "none"}),
+                        html.Div(rule_items, id={"type": "rule-list", "model": model}, style=rule_list_style),
                     ],
                     className="mb-2",
                 )
             )
-        
+
         return dbc.ListGroup(tree_items, flush=True)
-    
+
     except Exception as e:
         return html.Div(f"加载导航树失败: {str(e)}", className="text-danger")
 
 
 @callback(
     Output("expanded-model-store", "data"),
-    Output({"type": "rule-list", "model": ALL}, "style"),
     Input({"type": "model-item", "model": ALL}, "n_clicks"),
     State("expanded-model-store", "data"),
     State({"type": "model-item", "model": ALL}, "id"),
     prevent_initial_call=True,
 )
 def toggle_model(n_clicks_list, expanded_model, model_ids):
-    """展开/折叠 Model 下的 Rule Code 列表"""
     if not ctx.triggered:
-        return no_update, no_update
-    
-    # 找到被点击的 model
+        return no_update
+
     triggered_id = ctx.triggered_id
     if not triggered_id or "model" not in triggered_id:
-        return no_update, no_update
-    
+        return no_update
+
     triggered_model = triggered_id["model"]
-    
-    # 切换逻辑：如果当前就是展开的 model，设为 None（折叠）；否则设为这个 model
     new_expanded_model = None if expanded_model == triggered_model else triggered_model
-    
-    # 根据新状态设置所有 rule-list 的显示状态
-    new_styles = []
-    for model_id in model_ids:
-        model = model_id["model"]
-        if model == new_expanded_model:
-            new_styles.append({"display": "block"})
-        else:
-            new_styles.append({"display": "none"})
-    
-    return new_expanded_model, new_styles
+
+    return new_expanded_model
 
 
+# -------------------------
+# single 模式：点击 rule 展开/折叠字段列表（但这里我们懒加载字段：点击 rule 时才拉字段并填充 field-list）
+# 注意：为了最小改动，我们单独写一个回调来填充 field-list children
+# -------------------------
 @callback(
-    Output("expanded-rule-store", "data"),
+    Output({"type": "field-list", "model": ALL, "rule": ALL}, "children"),
     Output({"type": "field-list", "model": ALL, "rule": ALL}, "style"),
+    Output("expanded-rule-store", "data"),
     Input({"type": "rule-item", "model": ALL, "rule": ALL}, "n_clicks"),
-    State("expanded-rule-store", "data"),
     State({"type": "rule-item", "model": ALL, "rule": ALL}, "id"),
+    State("expanded-rule-store", "data"),
+    State("view-mode-store", "data"),
     prevent_initial_call=True,
 )
-def toggle_rule(n_clicks_list, expanded_rule, rule_ids):
-    """展开/折叠 Rule Code 下的 Field 列表"""
+def toggle_rule_and_render_fields(n_clicks_list, rule_ids, expanded_rule, view_mode):
+    # helper：为 ALL 输出构造 no_update 列表
+    n = len(rule_ids) if rule_ids else 0
+    def _no_updates():
+        return [no_update] * n, [no_update] * n, no_update
+
+    # multi 模式：不允许展开字段
+    if view_mode != "single":
+        return _no_updates()
+
     if not ctx.triggered:
-        return no_update, no_update
-    
-    # 找到被点击的 rule
+        return _no_updates()
+
     triggered_id = ctx.triggered_id
     if not triggered_id or "rule" not in triggered_id:
-        return no_update, no_update
-    
+        return _no_updates()
+
     triggered_model = triggered_id["model"]
     triggered_rule = triggered_id["rule"]
     triggered_info = {"model": triggered_model, "rule": triggered_rule}
-    
-    # 切换逻辑：如果当前就是展开的 rule，设为 None（折叠）；否则设为这个 rule
+
     new_expanded_rule = None if expanded_rule == triggered_info else triggered_info
-    
-    # 根据新状态设置所有 field-list 的显示状态
+
+    db = get_db_manager()
+
+    new_children_list = []
     new_styles = []
-    for rule_id in rule_ids:
-        if new_expanded_rule and rule_id["model"] == new_expanded_rule["model"] and rule_id["rule"] == new_expanded_rule["rule"]:
+
+    # 为每个 field-list 生成 children/style
+    for rid in rule_ids:
+        model = rid["model"]
+        rule = rid["rule"]
+
+        if new_expanded_rule and model == new_expanded_rule["model"] and rule == new_expanded_rule["rule"]:
+            fields = db.get_fields(model, rule)
+            field_items = [
+                dbc.ListGroupItem(
+                    f.get("field_name", f["field"]),
+                    id={"type": "field-item", "model": model, "rule": rule, "field_id": f["field_id"]},
+                    action=True,
+                    className="ps-5",
+                    style={"fontSize": "0.85rem"},
+                )
+                for f in fields
+            ]
+            new_children_list.append(field_items)
             new_styles.append({"display": "block"})
         else:
+            new_children_list.append([])
             new_styles.append({"display": "none"})
-    
-    return new_expanded_rule, new_styles
+
+    return new_children_list, new_styles, new_expanded_rule
 
 
+# -------------------------
+# single 模式：字段选择（保持你原逻辑）
+# -------------------------
 @callback(
-    Output("selected-fields-store", "data"),
-    Output("current-model-store", "data"),
+    Output("selected-fields-store", "data", allow_duplicate=True),
+    Output("current-model-store", "data", allow_duplicate=True),
     Input({"type": "field-item", "model": ALL, "rule": ALL, "field_id": ALL}, "n_clicks"),
     State("selected-fields-store", "data"),
     State("current-model-store", "data"),
+    State("view-mode-store", "data"),
     prevent_initial_call=True,
 )
-def select_field(n_clicks_list, selected_fields, current_model):
-    """处理字段选择（单图模式）"""
+def select_field(n_clicks_list, selected_fields, current_model, view_mode):
+    if view_mode != "single":
+        return no_update, no_update
+
     if not ctx.triggered:
         return no_update, no_update
-    
+
     triggered_id = ctx.triggered_id
     if not triggered_id:
         return no_update, no_update
-    
+
     model = triggered_id["model"]
     field_id = triggered_id["field_id"]
-    
-    # 初始化
+
     if selected_fields is None:
         selected_fields = []
-    
-    # 检查是否切换了 model
+
     if current_model and current_model != model:
-        # 切换 model，清空之前的选择
         selected_fields = []
-    
-    # 构建字段信息
+
     field_info = {"model": model, "field_id": field_id}
-    
-    # 单图模式：只保留一个字段，新选择替换旧的
+
     if selected_fields and selected_fields[0] == field_info:
-        # 点击同一个字段，取消选择
         selected_fields = []
     else:
-        # 替换为新选择的字段
         selected_fields = [field_info]
-    
+
     return selected_fields, model
 
 
+# -------------------------
+# multi 模式：点击 rule 选择 rule + 重置页码
+# -------------------------
+@callback(
+    Output("selected-rule-store", "data", allow_duplicate=True),
+    Output("multi-page-store", "data", allow_duplicate=True),
+    Output("selected-fields-store", "data", allow_duplicate=True),
+    Output("current-model-store", "data", allow_duplicate=True),
+    Input({"type": "rule-item", "model": ALL, "rule": ALL}, "n_clicks"),
+    State("view-mode-store", "data"),
+    prevent_initial_call=True,
+)
+def select_rule_multi(n_clicks_list, view_mode):
+    if view_mode != "multi":
+        return no_update, no_update, no_update, no_update
+    if not ctx.triggered:
+        return no_update, no_update, no_update, no_update
+
+    triggered_id = ctx.triggered_id
+    if not triggered_id:
+        return no_update, no_update, no_update, no_update
+
+    model = triggered_id["model"]
+    rule = triggered_id["rule"]
+
+    # 先清空 selected_fields，后续由分页回调填充第一页的 9 个字段
+    return {"model": model, "rule": rule}, {"page": 1}, [], model
+
+
+# -------------------------
+# multi 模式：分页按钮（上一页/下一页）
+# -------------------------
+@callback(
+    Output("multi-page-store", "data", allow_duplicate=True),
+    Input("multi-prev-btn", "n_clicks"),
+    Input("multi-next-btn", "n_clicks"),
+    State("multi-page-store", "data"),
+    State("multi-total-pages-store", "data"),
+    State("view-mode-store", "data"),
+    prevent_initial_call=True,
+)
+def change_multi_page(prev_clicks, next_clicks, page_data, total_pages, view_mode):
+    if view_mode != "multi":
+        return no_update
+
+    page = int((page_data or {}).get("page", 1))
+    total = int(total_pages or 1)
+
+    trig = ctx.triggered_id
+    if trig == "multi-prev-btn":
+        page = max(1, page - 1)
+    elif trig == "multi-next-btn":
+        page = min(total, page + 1)
+
+    return {"page": page}
+
+
+# -------------------------
+# multi 模式：根据 selected_rule + page 计算本页 9 个字段，并更新分页 UI
+# -------------------------
+@callback(
+    Output("selected-fields-store", "data", allow_duplicate=True),
+    Output("multi-total-pages-store", "data"),
+    Output("multi-pagination-container", "style"),
+    Output("multi-page-indicator", "children"),
+    Output("multi-prev-btn", "disabled"),
+    Output("multi-next-btn", "disabled"),
+    Input("selected-rule-store", "data"),
+    Input("multi-page-store", "data"),
+    State("view-mode-store", "data"),
+    prevent_initial_call=True,
+)
+def update_multi_page_fields(selected_rule, page_data, view_mode):
+    if view_mode != "multi":
+        return [], 1, {"display": "none"}, "", True, True
+
+    if not selected_rule:
+        return [], 1, {"display": "none"}, "", True, True
+
+    model = selected_rule["model"]
+    rule = selected_rule["rule"]
+    page = int((page_data or {}).get("page", 1))
+
+    db = get_db_manager()
+    fields = db.get_fields(model, rule)  # 已按 field 排序
+
+    total_fields = len(fields)
+    total_pages = max(1, math.ceil(total_fields / MULTI_PAGE_SIZE))
+    page = max(1, min(page, total_pages))
+
+    start = (page - 1) * MULTI_PAGE_SIZE
+    end = min(total_fields, start + MULTI_PAGE_SIZE)
+    page_fields = fields[start:end]
+
+    selected_fields = [{"model": model, "field_id": int(f["field_id"])} for f in page_fields]
+
+    indicator = f"第 {page}/{total_pages} 页（本页 {len(page_fields)} / 总字段 {total_fields}）"
+    prev_disabled = (page <= 1)
+    next_disabled = (page >= total_pages)
+
+    return selected_fields, total_pages, {"display": "block"}, indicator, prev_disabled, next_disabled
+
+
+# -------------------------
+# 已选信息显示：single 显示字段；multi 显示 model+rule+本页字段
+# -------------------------
 @callback(
     Output("selected-info-display", "children"),
     Input("selected-fields-store", "data"),
     Input("selected-episode-store", "data"),
+    Input("selected-rule-store", "data"),
     State("current-model-store", "data"),
+    State("view-mode-store", "data"),
+    State("multi-page-store", "data"),
+    State("multi-total-pages-store", "data"),
 )
-def update_selected_info_display(selected_fields, episode_data, current_model):
-    """更新已选信息显示（字段 + Episode）"""
+def update_selected_info_display(
+    selected_fields,
+    episode_data,
+    selected_rule,
+    current_model,
+    view_mode,
+    page_data,
+    total_pages,
+):
     info_items = []
-    
-    # 显示已选字段
-    if selected_fields:
-        db = get_db_manager()
-        field_badges = []
-        for field_info in selected_fields:
-            field_name = db.get_field_name(field_info["model"], field_info["field_id"])
-            field_badges.append(
-                dbc.Badge(
-                    field_name,
-                    color="primary",
-                    className="me-2 mb-2",
-                    style={"fontSize": "0.85rem"},
+
+    db = get_db_manager()
+
+    # --- 选择信息 ---
+    if view_mode == "multi":
+        if selected_rule:
+            info_items.append(
+                html.Div(
+                    [
+                        html.Strong("已选 Rule： "),
+                        dbc.Badge(f"{selected_rule['model']} / {selected_rule['rule']}", color="primary", className="me-2"),
+                        html.Span(f"页码：{(page_data or {}).get('page', 1)}/{total_pages}", className="text-muted small"),
+                    ],
+                    className="mb-2",
                 )
             )
-        info_items.append(
-            html.Div([
-                html.Strong("已选字段： "),
-                html.Div(field_badges, style={"display": "inline-block"}),
-            ], className="mb-2")
-        )
-    else:
-        info_items.append(
-            html.Div([
-                html.Strong("已选字段： "),
-                html.Span("尚未选择字段", className="text-muted"),
-            ], className="mb-2")
-        )
+        else:
+            info_items.append(
+                html.Div(
+                    [html.Strong("已选 Rule： "), html.Span("尚未选择 Rule Code", className="text-muted")],
+                    className="mb-2",
+                )
+            )
     
-    # 显示 Episode 信息
+    # --- 获取字段信息 ---
+    fields_text = ""
+    if selected_fields:
+        model = selected_fields[0]["model"]
+        field_ids = [int(x["field_id"]) for x in selected_fields]
+        field_map = db.get_fields_batch(model, field_ids)
+        
+        field_list = [field_map.get(fid, f"field_{fid}") for fid in field_ids]
+        fields_text = "\n".join(field_list)
+
+    # --- Episode 信息 ---
     info_items.append(html.Hr())
-    
+
+    # 始终显示 Episode 信息字段
+    episode_id_val = ""
+    sn_val = ""
+    taskid_val = ""
+    area_val = ""
+    collected_at_val = ""
+    filename_val = ""
+
     if episode_data and current_model:
         try:
-            from .database import qident
-            
-            db = get_db_manager()
             episode_id = episode_data.get("episode_id")
-            
             if episode_id:
-                # 获取episode详细信息
                 schema = qident(current_model)
                 query = f"""
                 SELECT episode_id, taskid, model, area, sn, collected_at, filename
@@ -270,49 +493,37 @@ def update_selected_info_display(selected_fields, episode_data, current_model):
                 WHERE episode_id = %s
                 """
                 df = db.execute_query(query, (episode_id,))
-                
                 if not df.empty:
                     episode_info = df.iloc[0]
-                    info_items.extend([
-                        html.Div([html.Strong("Episode ID: "), html.Span(str(episode_info["episode_id"]))], className="mb-1"),
-                        html.Div([html.Strong("SN: "), html.Span(str(episode_info["sn"]))], className="mb-1"),
-                        html.Div([html.Strong("TaskID: "), html.Span(str(episode_info["taskid"]))], className="mb-1"),
-                        html.Div([html.Strong("采集地点: "), html.Span(str(episode_info.get("area", "N/A")))], className="mb-1"),
-                        html.Div([html.Strong("采集时间: "), html.Span(str(episode_info["collected_at"]))], className="mb-1"),
-                        html.Div([html.Strong("文件名: "), html.Span(str(episode_info["filename"]))], className="mb-1"),
-                    ])
-                else:
-                    # 未找到信息，显示空内容
-                    info_items.extend([
-                        html.Div([html.Strong("Episode ID: "), html.Span("")], className="mb-1"),
-                        html.Div([html.Strong("SN: "), html.Span("")], className="mb-1"),
-                        html.Div([html.Strong("TaskID: "), html.Span("")], className="mb-1"),
-                        html.Div([html.Strong("采集时间: "), html.Span("")], className="mb-1"),
-                        html.Div([html.Strong("文件名: "), html.Span("")], className="mb-1"),
-                    ])
+                    episode_id_val = str(episode_info["episode_id"])
+                    sn_val = str(episode_info["sn"])
+                    taskid_val = str(episode_info["taskid"])
+                    area_val = str(episode_info.get("area", "N/A"))
+                    collected_at_val = str(episode_info["collected_at"])
+                    filename_val = str(episode_info["filename"])
         except Exception as e:
-            info_items.extend([
-                html.Div([html.Strong("Episode ID: "), html.Span("")], className="mb-1"),
-                html.Div([html.Strong("SN: "), html.Span("")], className="mb-1"),
-                html.Div([html.Strong("TaskID: "), html.Span("")], className="mb-1"),
-                html.Div([html.Strong("采集时间: "), html.Span("")], className="mb-1"),
-                html.Div([html.Strong("文件名: "), html.Span("")], className="mb-1"),
-                html.Div([html.Span(f"错误: {str(e)}", className="text-danger small")], className="mb-1"),
-            ])
-    else:
-        # 未选中 episode，显示空内容
-        info_items.extend([
-            html.Div([html.Strong("Episode ID: "), html.Span("")], className="mb-1"),
-            html.Div([html.Strong("SN: "), html.Span("")], className="mb-1"),
-            html.Div([html.Strong("TaskID: "), html.Span("")], className="mb-1"),
-            html.Div([html.Strong("采集地点: "), html.Span("")], className="mb-1"),
-            html.Div([html.Strong("采集时间: "), html.Span("")], className="mb-1"),
-            html.Div([html.Strong("文件名: "), html.Span("")], className="mb-1"),
-        ])
-    
+            info_items.append(html.Div([html.Span(f"错误: {str(e)}", className="text-danger small")]))
+
+    # 始终显示这些字段（有值则显示，无值则为空）
+    field_label = "本页字段: " if view_mode == "multi" else "已选字段: "
+    info_items.extend(
+        [
+            html.Div([html.Strong(field_label), html.Span(fields_text, style={"whiteSpace": "pre-line", "wordBreak": "break-all", "fontSize": "0.85rem"})], className="mb-1"),
+            html.Div([html.Strong("Episode ID: "), html.Span(episode_id_val)], className="mb-1"),
+            html.Div([html.Strong("SN: "), html.Span(sn_val)], className="mb-1"),
+            html.Div([html.Strong("TaskID: "), html.Span(taskid_val)], className="mb-1"),
+            html.Div([html.Strong("采集地点: "), html.Span(area_val)], className="mb-1"),
+            html.Div([html.Strong("采集时间: "), html.Span(collected_at_val)], className="mb-1"),
+            html.Div([html.Strong("文件名: "), html.Span(filename_val)], className="mb-1"),
+        ]
+    )
+
     return html.Div(info_items, className="p-2 bg-light rounded")
 
 
+# -------------------------
+# 图表更新：single 用旧图；multi 用子图（每页 9 个字段）
+# -------------------------
 @callback(
     Output("chart-container", "children"),
     Output("statistics-panel", "children"),
@@ -320,61 +531,91 @@ def update_selected_info_display(selected_fields, episode_data, current_model):
     Input("time-range-dropdown", "value"),
     Input("sort-by-dropdown", "value"),
     Input("group-by-dropdown", "value"),
+    State("view-mode-store", "data"),
+    State("selected-rule-store", "data"),
 )
-def update_chart(selected_fields, time_range, sort_by, group_by):
-    """更新图表和统计面板"""
+def update_chart(selected_fields, time_range, sort_by, group_by, view_mode, selected_rule):
     if not selected_fields:
+        if view_mode == "multi":
+            return html.Div("请从左侧导航树选择 Rule Code", className="text-muted text-center mt-5"), None
         return html.Div("请从左侧导航树选择字段", className="text-muted text-center mt-5"), None
-    
+
     try:
         db = get_db_manager()
         model = selected_fields[0]["model"]
-        field_ids = [f["field_id"] for f in selected_fields]
-        
-        # 计算时间范围
-        time_range_tuple = None
-        if time_range == "7d":
-            end = datetime.now()
-            start = end - timedelta(days=7)
-            time_range_tuple = (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        elif time_range == "30d":
-            end = datetime.now()
-            start = end - timedelta(days=30)
-            time_range_tuple = (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        elif time_range == "90d":
-            end = datetime.now()
-            start = end - timedelta(days=90)
-            time_range_tuple = (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        
-        # 获取数据
+        field_ids = [int(f["field_id"]) for f in selected_fields]
+
+        # 时间范围
+        time_range_tuple = _calc_time_range(time_range)
+
+        # 拉数据
         df = db.get_field_data(model, field_ids, time_range_tuple)
-        
         if df.empty:
             return html.Div("未找到符合条件的数据", className="text-muted text-center mt-5"), None
+
+        # field 信息批量获取（包含 field、field_name 和 type）
+        field_info_map = db.get_field_info_batch(model, field_ids)
         
-        # 转换 value 为数值类型
-        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+        # 根据字段类型转换 value
+        def convert_value(row):
+            fid = row["field_id"]
+            if fid not in field_info_map:
+                return pd.NA
+            
+            field_type = field_info_map[fid].get("type", "numeric")
+            value = row["value"]
+            
+            if field_type == "non_numeric":
+                # non_numeric: 空或不存在 → 1, 存在且不为空 → 0
+                if pd.isna(value) or value == "" or value == "N/A":
+                    return 1.0
+                else:
+                    return 0.0
+            else:
+                # numeric: 正常转换为数值
+                try:
+                    return float(value)
+                except (ValueError, TypeError):
+                    return pd.NA
+        
+        df["value"] = df.apply(convert_value, axis=1)
         df = df.dropna(subset=["value"])
+        if df.empty:
+            return html.Div("未找到可用的数值数据（value 全部无法转为数值）", className="text-muted text-center mt-5"), None
         
-        # 获取字段名称和阈值
+        # 用 field（不是 field_name）来查询阈值
+        fields_for_thresholds = [field_info_map[fid]["field"] for fid in field_ids if fid in field_info_map]
+        thresholds_map = db.get_thresholds_batch(model, fields_for_thresholds)
+
         field_info_list = []
-        for field_id in field_ids:
-            field_name = db.get_field_name(model, field_id)
-            thresholds = db.get_thresholds(model, field_name)
-            field_info_list.append({
-                "field_id": field_id,
-                "field_name": field_name,
-                "thresholds": thresholds,
-            })
-        
-        # 创建图表
-        chart = create_scatter_plot(df, field_info_list, sort_by, group_by)
-        
-        # 创建统计面板
-        stats = create_statistics_cards(df, field_info_list)
-        
+        for fid in field_ids:
+            if fid not in field_info_map:
+                continue
+            info = field_info_map[fid]
+            field_info_list.append(
+                {
+                    "field_id": fid,
+                    "field_name": info["display_name"],  # 用于图表显示
+                    "thresholds": thresholds_map.get(info["field"]),  # 用 field 查询阈值
+                }
+            )
+
+        # multi：先算全局 episode 顺序（统一 sort/group）
+        if view_mode == "multi":
+            df = _compute_global_episode_index(df, sort_by=sort_by, group_by=group_by)
+            chart = create_scatter_plot_multi_subplots(
+                df,
+                field_info_list,
+                cols=3,
+                sort_by=sort_by,
+                group_by=group_by,
+            )
+        else:
+            chart = create_scatter_plot(df, field_info_list, sort_by, group_by)
+
+        stats = create_statistics_cards(df, field_info_list, group_by)
         return chart, stats
-    
+
     except Exception as e:
         return html.Div(f"图表生成失败: {str(e)}", className="text-danger text-center mt-5"), None
 
@@ -385,16 +626,12 @@ def update_chart(selected_fields, time_range, sort_by, group_by):
     prevent_initial_call=True,
 )
 def capture_click_data(click_data):
-    """捕获图表点击事件"""
+    """捕获图表点击事件（multi 子图也适用，因为仍是同一个 field-chart）"""
     if not click_data or "points" not in click_data or not click_data["points"]:
         return no_update
-    
-    # 获取点击的点的数据
+
     point = click_data["points"][0]
-    
-    # customdata 包含 episode_id
     if "customdata" in point:
-        episode_id = point["customdata"]
-        return {"episode_id": episode_id}
-    
+        return {"episode_id": point["customdata"]}
+
     return no_update
