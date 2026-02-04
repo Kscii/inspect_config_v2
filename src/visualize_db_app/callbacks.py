@@ -98,6 +98,7 @@ def _compute_global_episode_index(df: pd.DataFrame, sort_by: str, group_by: str)
     Output("current-model-store", "data", allow_duplicate=True),
     Output("expanded-model-store", "data", allow_duplicate=True),
     Output("expanded-rule-store", "data", allow_duplicate=True),
+    Output("selected-episode-store", "data", allow_duplicate=True),
     Input("view-mode-radio", "value"),
     prevent_initial_call=True,
 )
@@ -105,7 +106,7 @@ def set_view_mode(mode: str):
     # 切模式时清空选择和折叠状态，避免 single/multi 状态互相污染
     if mode not in ("single", "multi"):
         mode = "single"
-    return mode, [], None, {"page": 1}, None, None, None
+    return mode, [], None, {"page": 1}, None, None, None, None
 
 
 # -------------------------
@@ -460,21 +461,12 @@ def update_selected_info_display(
                     className="mb-2",
                 )
             )
-    
-    # --- 获取字段信息 ---
-    fields_text = ""
-    if selected_fields:
-        model = selected_fields[0]["model"]
-        field_ids = [int(x["field_id"]) for x in selected_fields]
-        field_map = db.get_fields_batch(model, field_ids)
-        
-        field_list = [field_map.get(fid, f"field_{fid}") for fid in field_ids]
-        fields_text = "\n".join(field_list)
 
     # --- Episode 信息 ---
     info_items.append(html.Hr())
 
-    # 始终显示 Episode 信息字段
+    # 始终显示 Episode 和字段信息
+    current_field_val = ""
     episode_id_val = ""
     sn_val = ""
     taskid_val = ""
@@ -485,6 +477,8 @@ def update_selected_info_display(
     if episode_data and current_model:
         try:
             episode_id = episode_data.get("episode_id")
+            field_id = episode_data.get("field_id")
+            
             if episode_id:
                 schema = qident(current_model)
                 query = f"""
@@ -501,14 +495,25 @@ def update_selected_info_display(
                     area_val = str(episode_info.get("area", "N/A"))
                     collected_at_val = str(episode_info["collected_at"])
                     filename_val = str(episode_info["filename"])
+            
+            # 获取当前字段
+            if field_id:
+                schema = qident(current_model)
+                field_query = f"""
+                SELECT field
+                FROM {schema}.field
+                WHERE field_id = %s
+                """
+                field_df = db.execute_query(field_query, (field_id,))
+                if not field_df.empty:
+                    current_field_val = str(field_df.iloc[0]["field"])
         except Exception as e:
             info_items.append(html.Div([html.Span(f"错误: {str(e)}", className="text-danger small")]))
 
     # 始终显示这些字段（有值则显示，无值则为空）
-    field_label = "本页字段: " if view_mode == "multi" else "已选字段: "
     info_items.extend(
         [
-            html.Div([html.Strong(field_label), html.Span(fields_text, style={"whiteSpace": "pre-line", "wordBreak": "break-all", "fontSize": "0.85rem"})], className="mb-1"),
+            html.Div([html.Strong("当前字段: "), html.Span(current_field_val, style={"wordBreak": "break-all", "fontSize": "0.85rem"})], className="mb-1"),
             html.Div([html.Strong("Episode ID: "), html.Span(episode_id_val)], className="mb-1"),
             html.Div([html.Strong("SN: "), html.Span(sn_val)], className="mb-1"),
             html.Div([html.Strong("TaskID: "), html.Span(taskid_val)], className="mb-1"),
@@ -632,6 +637,11 @@ def capture_click_data(click_data):
 
     point = click_data["points"][0]
     if "customdata" in point:
-        return {"episode_id": point["customdata"]}
+        customdata = point["customdata"]
+        if isinstance(customdata, list) and len(customdata) >= 2:
+            return {"episode_id": customdata[0], "field_id": customdata[1]}
+        else:
+            # 兼容旧格式
+            return {"episode_id": customdata}
 
     return no_update
