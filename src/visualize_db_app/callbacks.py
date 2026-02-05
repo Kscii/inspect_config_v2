@@ -18,6 +18,108 @@ from .database import DatabaseManager, qident
 from .charts import create_scatter_plot, create_scatter_plot_multi_subplots, create_statistics_cards
 
 
+# -------------------------
+# Clientside callback: 监听键盘方向键
+# -------------------------
+app.clientside_callback(
+    """
+    function(n) {
+        if (!window.keyboardListenerAdded) {
+            document.addEventListener('keydown', function(event) {
+                if (event.key === 'ArrowLeft') {
+                    const prevBtn = document.getElementById('keyboard-prev-trigger');
+                    if (prevBtn) prevBtn.click();
+                } else if (event.key === 'ArrowRight') {
+                    const nextBtn = document.getElementById('keyboard-next-trigger');
+                    if (nextBtn) nextBtn.click();
+                }
+            });
+            window.keyboardListenerAdded = true;
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("keyboard-listener-output", "children"),
+    Input("view-mode-store", "data"),
+)
+
+
+# -------------------------
+# 键盘翻页（左右方向键）：multi 模式翻页，single 模式切换字段
+# -------------------------
+@callback(
+    Output("multi-page-store", "data", allow_duplicate=True),
+    Output("selected-fields-store", "data", allow_duplicate=True),
+    Input("keyboard-prev-trigger", "n_clicks"),
+    Input("keyboard-next-trigger", "n_clicks"),
+    State("multi-page-store", "data"),
+    State("multi-total-pages-store", "data"),
+    State("view-mode-store", "data"),
+    State("selected-fields-store", "data"),
+    State("expanded-rule-store", "data"),
+    prevent_initial_call=True,
+)
+def keyboard_navigation(prev_clicks, next_clicks, page_data, total_pages, view_mode, selected_fields, expanded_rule):
+    trig = ctx.triggered_id
+    
+    # multi 模式：翻页
+    if view_mode == "multi":
+        page = int((page_data or {}).get("page", 1))
+        total = int(total_pages or 1)
+
+        if trig == "keyboard-prev-trigger":
+            page = max(1, page - 1)
+        elif trig == "keyboard-next-trigger":
+            page = min(total, page + 1)
+
+        return {"page": page}, no_update
+    
+    # single 模式：切换字段
+    elif view_mode == "single":
+        # 需要有展开的 rule 和选中的字段
+        if not expanded_rule or not selected_fields:
+            return no_update, no_update
+        
+        try:
+            model = expanded_rule["model"]
+            rule = expanded_rule["rule"]
+            current_field_id = selected_fields[0]["field_id"]
+            
+            # 获取当前 rule 下的所有字段
+            db = get_db_manager()
+            fields = db.get_fields(model, rule)
+            
+            if not fields:
+                return no_update, no_update
+            
+            # 找到当前字段的索引
+            field_ids = [f["field_id"] for f in fields]
+            try:
+                current_index = field_ids.index(current_field_id)
+            except ValueError:
+                return no_update, no_update
+            
+            # 计算新的索引
+            if trig == "keyboard-prev-trigger":
+                new_index = max(0, current_index - 1)
+            elif trig == "keyboard-next-trigger":
+                new_index = min(len(fields) - 1, current_index + 1)
+            else:
+                return no_update, no_update
+            
+            # 切换到新字段
+            new_field_id = field_ids[new_index]
+            new_selected = [{"model": model, "field_id": new_field_id}]
+            
+            return no_update, new_selected
+            
+        except Exception as e:
+            print(f"键盘导航失败: {e}")
+            return no_update, no_update
+    
+    return no_update, no_update
+
+
 MULTI_PAGE_SIZE = 9   # 每页 9 张（3x3）
 
 
@@ -422,34 +524,6 @@ def select_rule_multi(n_clicks_list, view_mode):
 
 
 # -------------------------
-# multi 模式：分页按钮（上一页/下一页）
-# -------------------------
-@callback(
-    Output("multi-page-store", "data", allow_duplicate=True),
-    Input("multi-prev-btn", "n_clicks"),
-    Input("multi-next-btn", "n_clicks"),
-    State("multi-page-store", "data"),
-    State("multi-total-pages-store", "data"),
-    State("view-mode-store", "data"),
-    prevent_initial_call=True,
-)
-def change_multi_page(prev_clicks, next_clicks, page_data, total_pages, view_mode):
-    if view_mode != "multi":
-        return no_update
-
-    page = int((page_data or {}).get("page", 1))
-    total = int(total_pages or 1)
-
-    trig = ctx.triggered_id
-    if trig == "multi-prev-btn":
-        page = max(1, page - 1)
-    elif trig == "multi-next-btn":
-        page = min(total, page + 1)
-
-    return {"page": page}
-
-
-# -------------------------
 # multi 模式：根据 selected_rule + page 计算本页 9 个字段，并更新分页 UI
 # -------------------------
 @callback(
@@ -457,8 +531,6 @@ def change_multi_page(prev_clicks, next_clicks, page_data, total_pages, view_mod
     Output("multi-total-pages-store", "data"),
     Output("multi-pagination-container", "style"),
     Output("multi-page-indicator", "children"),
-    Output("multi-prev-btn", "disabled"),
-    Output("multi-next-btn", "disabled"),
     Input("selected-rule-store", "data"),
     Input("multi-page-store", "data"),
     State("view-mode-store", "data"),
@@ -466,10 +538,10 @@ def change_multi_page(prev_clicks, next_clicks, page_data, total_pages, view_mod
 )
 def update_multi_page_fields(selected_rule, page_data, view_mode):
     if view_mode != "multi":
-        return [], 1, {"display": "none"}, "", True, True
+        return [], 1, {"display": "none"}, ""
 
     if not selected_rule:
-        return [], 1, {"display": "none"}, "", True, True
+        return [], 1, {"display": "none"}, ""
 
     model = selected_rule["model"]
     rule = selected_rule["rule"]
@@ -489,10 +561,8 @@ def update_multi_page_fields(selected_rule, page_data, view_mode):
     selected_fields = [{"model": model, "field_id": int(f["field_id"])} for f in page_fields]
 
     indicator = f"第 {page}/{total_pages} 页（本页 {len(page_fields)} / 总字段 {total_fields}）"
-    prev_disabled = (page <= 1)
-    next_disabled = (page >= total_pages)
 
-    return selected_fields, total_pages, {"display": "block"}, indicator, prev_disabled, next_disabled
+    return selected_fields, total_pages, {"display": "block"}, indicator
 
 
 # -------------------------
@@ -823,66 +893,60 @@ def handle_area_filter(selected_areas):
 @callback(
     Output("sampled-episodes-store", "data"),
     Output("sampling-active-store", "data"),
-    Input("apply-sampling-btn", "n_clicks"),
-    Input("reset-sampling-btn", "n_clicks"),
-    State("sampling-ratio-input", "value"),
+    Input("sampling-ratio-dropdown", "value"),
     State("current-model-store", "data"),
     State("selected-fields-store", "data"),
-    prevent_initial_call=True,
 )
-def handle_sampling(apply_clicks, reset_clicks, ratio, current_model, selected_fields):
-    """处理抽样按钮点击"""
+def handle_sampling(ratio, current_model, selected_fields):
+    """
+    处理抽样：监听下拉菜单值变化
+    - 100%: 不抽样（返回 None, False）
+    - 其他: 按 taskid 分组抽样，每个 taskid 至少保留 1 个 episode
+    """
     import random
     
-    triggered_id = ctx.triggered_id
-    
-    # 重置按钮
-    if triggered_id == "reset-sampling-btn":
+    # 100% 或无效值：不抽样
+    if not ratio or ratio >= 100:
         return None, False
     
-    # 应用抽样
-    if triggered_id == "apply-sampling-btn":
-        if not current_model or not selected_fields:
-            return no_update, no_update
-        
-        if not ratio or ratio <= 0 or ratio > 100:
-            return no_update, no_update
-        
-        try:
-            db = get_db_manager()
-            schema = qident(current_model)
-            
-            # 获取所有 episode，按 taskid 分组
-            query = f"""
-            SELECT DISTINCT episode_id, taskid
-            FROM {schema}.episode
-            ORDER BY taskid, episode_id
-            """
-            df = db.execute_query(query)
-            
-            if df.empty:
-                return None, False
-            
-            # 按 taskid 分组抽样
-            sampled_episodes = []
-            ratio_decimal = ratio / 100.0
-            
-            for taskid in df['taskid'].unique():
-                taskid_episodes = df[df['taskid'] == taskid]['episode_id'].tolist()
-                sample_size = max(1, int(len(taskid_episodes) * ratio_decimal))
-                sampled = random.sample(taskid_episodes, sample_size)
-                sampled_episodes.extend(sampled)
-            
-            print(f"[抽样] 总 episode 数: {len(df)}, 抽样后: {len(sampled_episodes)}, 比例: {ratio}%")
-            return sampled_episodes, True
-            
-        except Exception as e:
-            print(f"抽样失败: {e}")
-            import traceback
-            print(traceback.format_exc())
-            return no_update, no_update
+    # 没有选中字段或模型：不抽样
+    if not current_model or not selected_fields:
+        return None, False
     
-    return no_update, no_update
+    try:
+        db = get_db_manager()
+        schema = qident(current_model)
+        
+        # 查询所有 episode_id 和 taskid
+        query = f"""
+        SELECT DISTINCT episode_id, taskid
+        FROM {schema}.episode
+        ORDER BY taskid, episode_id
+        """
+        df = db.execute_query(query)
+        
+        if df.empty:
+            return None, False
+        
+        # 按 taskid 分组抽样
+        sampled_episodes = []
+        ratio_decimal = ratio / 100.0
+        
+        for taskid in df['taskid'].unique():
+            taskid_episodes = df[df['taskid'] == taskid]['episode_id'].tolist()
+            # 确保每个 taskid 至少保留 1 个 episode
+            sample_size = max(1, int(len(taskid_episodes) * ratio_decimal))
+            sampled = random.sample(taskid_episodes, sample_size)
+            sampled_episodes.extend(sampled)
+        
+        print(f"[抽样] 总 episode 数: {len(df)}, 抽样后: {len(sampled_episodes)}, 比例: {ratio}%")
+        return sampled_episodes, True
+        
+    except Exception as e:
+        print(f"抽样失败: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return None, False
 
 
 @callback(

@@ -84,7 +84,7 @@ def create_layout():
                                 [
                                     dbc.CardBody(
                                         [
-                                            # 视图模式选择和抽样控件
+                                            # 视图模式
                                             dbc.Row(
                                                 [
                                                     dbc.Col(
@@ -100,48 +100,33 @@ def create_layout():
                                                                 inline=True,
                                                             ),
                                                         ],
-                                                        width=4,
+                                                        width=6,
                                                     ),
                                                     dbc.Col(
                                                         [
                                                             html.Label("抽样比例："),
-                                                            dbc.InputGroup(
-                                                                [
-                                                                    dbc.Input(
-                                                                        id="sampling-ratio-input",
-                                                                        type="number",
-                                                                        min=1,
-                                                                        max=100,
-                                                                        step=1,
-                                                                        value=100,
-                                                                        placeholder="1-100",
-                                                                        size="sm",
-                                                                    ),
-                                                                    dbc.InputGroupText("%"),
-                                                                    dbc.Button(
-                                                                        "应用抽样",
-                                                                        id="apply-sampling-btn",
-                                                                        color="primary",
-                                                                        size="sm",
-                                                                    ),
-                                                                    dbc.Button(
-                                                                        "重置",
-                                                                        id="reset-sampling-btn",
-                                                                        color="secondary",
-                                                                        outline=True,
-                                                                        size="sm",
-                                                                    ),
+                                                            dcc.Dropdown(
+                                                                id="sampling-ratio-dropdown",
+                                                                options=[
+                                                                    {"label": "1%", "value": 1},
+                                                                    {"label": "5%", "value": 5},
+                                                                    {"label": "10%", "value": 10},
+                                                                    {"label": "20%", "value": 20},
+                                                                    {"label": "35%", "value": 35},
+                                                                    {"label": "50%", "value": 50},
+                                                                    {"label": "100%", "value": 100},
                                                                 ],
-                                                                size="sm",
+                                                                value=10,
+                                                                clearable=False,
                                                             ),
                                                         ],
-                                                        width=8,
+                                                        width=6,
                                                     ),
                                                 ],
                                                 className="mb-2",
                                             ),
 
-                                            # 地区过滤器（多选按钮，排除选中的地区）
+                                            # 地区过滤器
                                             dbc.Row(
                                                 [
                                                     dbc.Col(
@@ -180,7 +165,7 @@ def create_layout():
                                                                     {"label": "最近30天", "value": "30d"},
                                                                     {"label": "最近90天", "value": "90d"},
                                                                 ],
-                                                                value="30d",
+                                                                value="all",
                                                                 clearable=False,
                                                             ),
                                                         ],
@@ -226,32 +211,34 @@ def create_layout():
                                                 className="mb-3",
                                             ),
 
-                                            # multi 模式分页控件（由回调控制显隐/禁用）
+                                            # multi 模式分页信息显示
                                             html.Div(
                                                 id="multi-pagination-container",
                                                 children=[
-                                                    dbc.Button(
-                                                        "上一页",
-                                                        id="multi-prev-btn",
-                                                        color="secondary",
-                                                        outline=True,
-                                                        size="sm",
-                                                        className="me-2",
-                                                    ),
                                                     html.Span(
                                                         id="multi-page-indicator",
-                                                        className="text-muted small me-2",
+                                                        className="text-muted small",
                                                     ),
-                                                    dbc.Button(
-                                                        "下一页",
-                                                        id="multi-next-btn",
-                                                        color="secondary",
-                                                        outline=True,
-                                                        size="sm",
+                                                    html.Span(
+                                                        " （使用 ← → 方向键翻页）",
+                                                        className="text-muted small ms-2",
                                                     ),
                                                 ],
                                                 style={"display": "none"},
                                                 className="mb-3",
+                                            ),
+                                            # 键盘监听触发器（隐藏）
+                                            html.Button(
+                                                id="keyboard-prev-trigger",
+                                                style={"display": "none"},
+                                            ),
+                                            html.Button(
+                                                id="keyboard-next-trigger",
+                                                style={"display": "none"},
+                                            ),
+                                            html.Div(
+                                                id="keyboard-listener-output",
+                                                style={"display": "none"},
                                             ),
 
                                             # 已选信息显示（字段 + Episode）
