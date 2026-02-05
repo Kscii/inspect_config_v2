@@ -810,31 +810,14 @@ def capture_click_data(click_data):
 
 @callback(
     Output("filtered-areas-store", "data"),
-    Output("area-filter-input", "value"),
-    Input("apply-area-filter-btn", "n_clicks"),
-    Input("clear-area-filter-btn", "n_clicks"),
-    State("area-filter-input", "value"),
-    prevent_initial_call=True,
+    Input("area-filter-checklist", "value"),
 )
-def handle_area_filter(apply_clicks, clear_clicks, filter_text):
-    """处理地区过滤"""
-    triggered_id = ctx.triggered_id
-    
-    # 清除按钮
-    if triggered_id == "clear-area-filter-btn":
-        return [], ""
-    
-    # 应用过滤
-    if triggered_id == "apply-area-filter-btn":
-        if not filter_text or not filter_text.strip():
-            return [], ""
-        
-        # 解析逗号分隔的地区列表
-        areas = [area.strip() for area in filter_text.split(",") if area.strip()]
-        print(f"[地区过滤] 过滤掉的地区: {areas}")
-        return areas, filter_text
-    
-    return no_update, no_update
+def handle_area_filter(selected_areas):
+    """处理地区过滤：排除选中的地区"""
+    if not selected_areas:
+        return []
+    print(f"[地区过滤] 排除的地区: {selected_areas}")
+    return selected_areas
 
 
 @callback(
