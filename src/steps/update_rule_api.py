@@ -157,7 +157,8 @@ def run_step(
     models: List[str] = runtime["models"]
 
     presets = global_cfg["presets"]
-    current_preset: str = str(step_cfg.get("current_preset", "shanghai_dev"))
+
+    current_preset: str = str(global_cfg.get("current_preset", "shanghai_dev"))
 
     if current_preset not in presets:
         raise KeyError(f"[update_rule_api] preset not found: {current_preset}")

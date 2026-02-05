@@ -35,6 +35,10 @@ global:
     - update_rule_obs  
     - update_rule_api
 
+  # 当前使用的预设（统一配置，供 find_range、update_rule_obs、update_rule_api 使用）
+  # shanghai_dev/shanghai_prod/zhengzhou_prod/prod_all
+  current_preset: "shanghai_dev"
+
   presets:
     shanghai_prod:
       env: prod
@@ -398,8 +402,6 @@ collect:
 # Step: find_range（负责：根据 values.csv 估计区间，输出 ranges.csv）
 # ==============================================================================
 find_range:
-  # 当前使用哪个预设（shanghai_dev/shanghai_prod/zhengzhou_prod）
-  current_preset: "shanghai_dev"
 
   method: "cover"          # "iqr" / "mad" / "cover"
   iqr_k: 1.5
@@ -677,11 +679,6 @@ generate_db_csv:
     # thresholds_full:
     #   custom_field: "selector..."
 
-  # 兼容旧配置：metadata_selectors（已废弃，建议使用 table_extra_columns.episode）
-  # 如果同时存在，会自动合并到 episode 表
-  # metadata_selectors:
-  #   sn: "selector..."
-  #   collected_at: "selector..."
 
 
 # ==============================================================================
@@ -741,8 +738,6 @@ build_sql:
 # Step: update_rule_obs（负责：把 ranges.csv 上传到 OBS 固定路径，不覆盖）
 # ==============================================================================
 update_rule_obs:
-  # shanghai_prod/shanghai_dev/zhengzhou_prod/zhengzhou_dev
-  current_preset: "shanghai_dev"
 
   # obsutil 可执行文件：null 表示用 PATH 中的 obsutil
   obsutil_exe: null
@@ -773,8 +768,6 @@ update_rule_obs:
 # Step: update_rule_api（负责：调用接口更新规则）
 # ==============================================================================
 update_rule_api:
-  # shanghai_prod/shanghai_dev/zhengzhou_prod/zhengzhou_dev
-  current_preset: "shanghai_dev"
 
   put_path: "/data-collector/rule/update"
 
@@ -802,7 +795,7 @@ update_rule_api:
 # ==============================================================================
 visualize_db:
   # Dash 服务器配置
-  host: "127.0.0.1"
+  host: "0.0.0.0"
   port: 8050
   debug: false
 

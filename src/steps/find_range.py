@@ -69,8 +69,7 @@ def run_step(
     enable_region_adjust: bool = bool(step_cfg.get("enable_region_adjust", False))
     region_adjust_multipliers: Dict[str, float] = dict(step_cfg.get("region_adjust_multipliers", {}))
     
-    # 获取当前 preset（从 find_range 自己的配置读取）
-    current_preset: str = str(step_cfg.get("current_preset", "shanghai_dev"))
+    current_preset: str = str(global_cfg.get("current_preset", "shanghai_dev"))
     
     # 获取当前 preset 的放宽倍数（默认 1.0 不放宽）
     region_multiplier: float = float(region_adjust_multipliers.get(current_preset, 1.0))
