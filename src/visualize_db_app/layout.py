@@ -104,7 +104,7 @@ def create_layout():
                                                     ),
                                                     dbc.Col(
                                                         [
-                                                            html.Label("抽样比例（每个TaskID）："),
+                                                            html.Label("抽样比例："),
                                                             dbc.InputGroup(
                                                                 [
                                                                     dbc.Input(
@@ -141,35 +141,23 @@ def create_layout():
                                                 className="mb-2",
                                             ),
 
-                                            # 地区过滤器
+                                            # 地区过滤器（多选按钮，排除选中的地区）
                                             dbc.Row(
                                                 [
                                                     dbc.Col(
                                                         [
-                                                            html.Label("过滤地区（逗号分隔，不显示）："),
-                                                            dbc.InputGroup(
-                                                                [
-                                                                    dbc.Input(
-                                                                        id="area-filter-input",
-                                                                        type="text",
-                                                                        placeholder="例：shanghai,beijing",
-                                                                        size="sm",
-                                                                    ),
-                                                                    dbc.Button(
-                                                                        "应用过滤",
-                                                                        id="apply-area-filter-btn",
-                                                                        color="primary",
-                                                                        size="sm",
-                                                                    ),
-                                                                    dbc.Button(
-                                                                        "清除",
-                                                                        id="clear-area-filter-btn",
-                                                                        color="secondary",
-                                                                        outline=True,
-                                                                        size="sm",
-                                                                    ),
+                                                            html.Label("过滤地区："),
+                                                            dcc.Checklist(
+                                                                id="area-filter-checklist",
+                                                                options=[
+                                                                    {"label": " shanghai_dev", "value": "shanghai_dev"},
+                                                                    {"label": " shanghai_prod", "value": "shanghai_prod"},
+                                                                    {"label": " zhengzhou_prod", "value": "zhengzhou_prod"},
                                                                 ],
-                                                                size="sm",
+                                                                value=["shanghai_dev"],  # 初始选中 shanghai_dev（排除）
+                                                                inline=True,
+                                                                className="mb-2",
+                                                                labelStyle={"marginRight": "15px"},
                                                             ),
                                                         ],
                                                         width=12,
