@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.pipeline import filter_json_files_by_area
+
 
 @dataclass
 class CollectResult:
@@ -373,6 +375,11 @@ def run_step(
             continue
 
         json_files = _iter_json_files(model_root, json_suffix)
+        
+        # 根据 enabled_areas 过滤
+        if runtime.get("enabled_areas") is not None:
+            json_files = filter_json_files_by_area(json_files, model_root, runtime, logger)
+        
         if not json_files:
             _log(logger, f"[collect] model={model} 未找到 json -> 跳过")
             continue

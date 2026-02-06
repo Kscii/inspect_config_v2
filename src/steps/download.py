@@ -233,7 +233,9 @@ def run_step(
 
     # (a) obs_download 若存在，也作为来源（可能未分组）
     if obs_download_root.exists() and obs_download_root.is_dir():
-        sources.append((obs_download_root, None))
+        # 单个 preset 模式：传递当前 preset_name
+        preset_for_obs = preset_list[0] if len(preset_list) == 1 else None
+        sources.append((obs_download_root, preset_for_obs))
 
     if current_preset in ("prod_all", "all"):
         # staging：每个 preset 的 dst_root/collect 作为来源
@@ -245,7 +247,9 @@ def run_step(
         # (b) 非 CSV：只需要考虑 repo_root/collect
         if (not csv_mode) and collect_root.exists() and collect_root.is_dir():
             if not obs_download_root.exists() or collect_root.resolve() != obs_download_root.resolve():
-                sources.append((collect_root, None))
+                # 单个 preset 模式：传递当前 preset_name
+                preset_for_collect = preset_list[0] if len(preset_list) == 1 else None
+                sources.append((collect_root, preset_for_collect))
 
         # (c) CSV：每个 prefix 的 leaf 落盘目录（如果存在）
         if csv_mode:

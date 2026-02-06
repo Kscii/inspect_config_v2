@@ -446,7 +446,7 @@ def _import_table(
         return
 
     copy_sql = sql.SQL(
-        "COPY {}.{} FROM STDIN WITH (FORMAT CSV, HEADER TRUE, ENCODING 'UTF8')"
+        "COPY {}.{} FROM STDIN WITH (FORMAT CSV, HEADER TRUE, ENCODING 'UTF8', NULL '')"
     ).format(
         sql.Identifier(schema),
         sql.Identifier(table),

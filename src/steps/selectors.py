@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
-
+from core.pipeline import filter_json_files_by_area
 
 @dataclass
 class SelectorsResult:
@@ -95,7 +95,9 @@ def run_step(
     allow_all_if_no_allowlists: bool = bool(step_cfg.get("allow_all_if_no_allowlists"))
 
     enable_random_consistency_check: bool = bool(step_cfg.get("enable_random_consistency_check"))
-    consistency_sample_tasks: int = int(step_cfg.get("consistency_sample_tasks"))
+    # consistency_sample_tasks 支持 "all" 或整数
+    consistency_sample_tasks_raw = step_cfg.get("consistency_sample_tasks")
+    consistency_sample_tasks = consistency_sample_tasks_raw  # 保留原始值（"all" 或整数）
     consistency_random_seed = step_cfg.get("consistency_random_seed")
     consistency_diff_preview: int = int(step_cfg.get("consistency_diff_preview"))
 
@@ -170,6 +172,7 @@ def run_step(
                 allow_all_if_no_allowlists=allow_all_if_no_allowlists,
                 enable_min_sample_filter=enable_union_min_sample_filter,
                 min_sample_ratio=min_sample_ratio,
+                runtime=runtime,
             )
             _log(logger, log_mode, f"[selectors] model={model} union selectors from all tasks: {len(union_selectors)}")
             filtered = sorted(union_selectors)
@@ -288,6 +291,7 @@ def _compute_union_of_all_samples(
     allow_all_if_no_allowlists: bool,
     enable_min_sample_filter: bool = False,
     min_sample_ratio: float = 0.8,
+    runtime: Optional[Dict[str, Any]] = None,
 ) -> Set[str]:
     """
     遍历 model_root 下的所有任务目录，对每个任务：
@@ -303,6 +307,18 @@ def _compute_union_of_all_samples(
     selector_count: Dict[str, int] = {} if enable_min_sample_filter else None
     
     tasks = [p for p in model_root.iterdir() if p.is_dir()]
+    
+    # 根据 enabled_areas 过滤任务目录
+    if runtime and runtime.get("enabled_areas") is not None:
+        enabled_areas = runtime["enabled_areas"]
+        taskid_to_area = runtime.get("taskid_to_area", {})
+        filtered_tasks = []
+        for task_dir in tasks:
+            area = taskid_to_area.get(task_dir.name)
+            if area and area in enabled_areas:
+                filtered_tasks.append(task_dir)
+        tasks = filtered_tasks
+        _log(logger, log_mode, f"[selectors][UNION] model={model} area过滤后剩余 {len(tasks)} 个任务目录")
     
     _log(logger, log_mode, f"[selectors][UNION] model={model} 开始遍历 {len(tasks)} 个任务目录")
     
@@ -496,7 +512,7 @@ def _random_consistency_check(
     model_root: Path,
     base_sample_path: Path,  # 新增：base 样本路径
     base_selectors: Set[str],
-    sample_tasks: int,
+    sample_tasks,  # 支持 "all" 或整数
     seed,
     diff_preview: int,
     logger,
@@ -520,9 +536,16 @@ def _random_consistency_check(
     if not tasks:
         return
 
-    rnd = random.Random(seed) if seed is not None else random.Random()
-    rnd.shuffle(tasks)
-    tasks = tasks[: min(sample_tasks, len(tasks))]
+    # 如果 sample_tasks 是 "all"，检查所有任务；否则随机抽样
+    if isinstance(sample_tasks, str) and sample_tasks.lower() == "all":
+        _log(logger, log_mode, f"[selectors][CONSISTENCY] model={model} 使用全部 {len(tasks)} 个任务进行一致性检查")
+        # 不进行随机抽样，使用所有任务
+    else:
+        sample_tasks_int = int(sample_tasks)
+        rnd = random.Random(seed) if seed is not None else random.Random()
+        rnd.shuffle(tasks)
+        tasks = tasks[: min(sample_tasks_int, len(tasks))]
+        _log(logger, log_mode, f"[selectors][CONSISTENCY] model={model} 随机抽样 {len(tasks)} 个任务进行一致性检查")
 
     for task_dir in tasks:
         sample = _pick_one_json(task_dir)

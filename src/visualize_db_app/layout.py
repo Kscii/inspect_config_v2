@@ -168,6 +168,19 @@ def create_layout():
                                                                 value="all",
                                                                 clearable=False,
                                                             ),
+                                                            html.Div(
+                                                                [
+                                                                    html.Label("最近天数（仅all时生效）：", className="mt-2 small text-muted"),
+                                                                    dbc.Input(
+                                                                        id="recent-days-input",
+                                                                        type="number",
+                                                                        placeholder="留空=不限制",
+                                                                        min=1,
+                                                                        step=1,
+                                                                        size="sm",
+                                                                    ),
+                                                                ]
+                                                            ),
                                                         ],
                                                         width=4,
                                                     ),
@@ -300,6 +313,9 @@ def create_layout():
             
             # 地区过滤相关
             dcc.Store(id="filtered-areas-store", data=[]),  # 存储需要过滤的地区列表
+            
+            # 最近x天相关
+            dcc.Store(id="recent-days-store", data=None),  # 存储最近天数值
             
             # 下载组件
             dcc.Download(id="download-json"),

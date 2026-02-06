@@ -39,6 +39,11 @@ global:
   # shanghai_dev/shanghai_prod/zhengzhou_prod/prod_all
   current_preset: "shanghai_dev"
 
+  # 指定要处理的 area 列表（空或 null 表示处理所有 area）
+  # 说明：download 步骤仍会下载所有 area 的数据，但后续步骤只处理指定的 area
+  # 例如：[shanghai_prod, zhengzhou_prod] 表示只处理这两个区域的数据
+  enabled_areas: [shanghai_prod, zhengzhou_prod]
+
   presets:
     shanghai_prod:
       env: prod
@@ -310,8 +315,32 @@ selectors:
 
     - contains: ["/robot>]"]
 
-  
 
+
+  
+  # 测试环境干扰导致的无效数据，属于正常情况，直接屏蔽掉
+    # .<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<data_info>.<camera_info>.<chest_right>.<rgb_data>.<type>
+    - models: ["A2D"]
+      contains: [".<chest_left>"]  # 只有测试环境普遍存在
+    - models: ["A2D"]
+      contains: [".<chest_right>"]
+    # .<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<data_info>.<camera_info>.<head_front>.<camera_type>
+    - models: ["A2D"]
+      contains: [".<head_front>"]
+    # .<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<data_info>.<joint_info>.<action/arm>.<datasets>.[<name>=<effort>].<name>
+    - models: ["A2D"]
+      contains: [".[<name>=<effort>]"]
+    - models: ["A2D"]
+      contains: [".[<name>=<effort>]"]
+    - models: ["A2D"]
+      contains: [".<state/head>.<datasets>.[<name>=<effort>]"]
+    # .<report>.[<ruleCode>=<metadata_raw>].<rawDataMetric>.[<name>=<metadata.json>].<rawData>.<metadata>.<data_info>.<joint_info>.<action/arm>.<datasets>.[<name>=<velocity>].<name>
+    - models: ["A2D"]
+      contains: [".<action/arm>.<datasets>.[<name>=<velocity>]"]
+    - models: ["A2D"]
+      contains: [".<state/arm>.<datasets>.[<name>=<velocity>]"]
+    - models: ["A2D"]
+      contains: [".<state/head>.<datasets>.[<name>=<velocity>]"]
 
 
   # -------------------------
@@ -454,17 +483,17 @@ find_range:
       min_lo: 0
       max_lo: 0
 
-    - contains: ["camera_static_interval"]
+    - contains: ["camera_static_interval","total_second_sum"]
       min_lo: 0
       max_lo: 0
-      min_hi: 0
-      max_hi: 0
+      min_hi: 1
+      max_hi: 1
 
-    - contains: ["joint_motion_interval"]
+    - contains: ["joint_motion_interval","total_second_sum"]
       min_lo: 0.1
       max_lo: 0.1
-      min_hi: 10000
-      max_hi: 10000
+      min_hi: 100000
+      max_hi: 100000
 
     - contains: ["color>].<rawData>.<fps>"]
       min_lo: 25
@@ -780,7 +809,7 @@ update_rule_api:
   timeout_sec: 30
 
   csv_output_dirname: "csv_output"
-  fail_if_id_missing: true
+  fail_if_id_missing: false
   fail_if_txt_missing: true
   enable_full: true
   
@@ -788,6 +817,8 @@ update_rule_api:
   # - true: 只执行 Base Config 更新（仅发送 {"id": xxx, "config": "..."}）
   # - false: 执行完整更新流程（Base + Full + csvPath + csvFullPath）
   only_update_base_config: false
+
+  skip_missing_rule_id: true
 
 
 # ==============================================================================

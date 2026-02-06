@@ -223,7 +223,8 @@ class DatabaseManager:
         params: List[Any] = []
 
         if time_range:
-            where_clauses.append("e.collected_at >= %s AND e.collected_at <= %s")
+            # 使用 >= start AND < end 来包含 start 当天到 end 前一天的所有数据
+            where_clauses.append("e.collected_at >= %s AND e.collected_at < %s")
             params.extend(time_range)
 
         where_str = " AND ".join(where_clauses)
