@@ -44,6 +44,17 @@ app.clientside_callback(
 )
 
 
+MULTI_PAGE_SIZE = 9   # 每页 9 张（3x3）
+
+
+def get_db_manager() -> DatabaseManager:
+    """获取数据库管理器实例"""
+    db_config = app.server.config.get("DB_CONFIG")
+    if not db_config:
+        raise ValueError("Database configuration not found")
+    return DatabaseManager(db_config)
+
+
 # -------------------------
 # 键盘翻页（左右方向键）：multi 模式翻页，single 模式切换字段
 # -------------------------
@@ -61,7 +72,7 @@ app.clientside_callback(
 )
 def keyboard_navigation(prev_clicks, next_clicks, page_data, total_pages, view_mode, selected_fields, expanded_rule):
     trig = ctx.triggered_id
-    
+
     # multi 模式：翻页
     if view_mode == "multi":
         page = int((page_data or {}).get("page", 1))
@@ -73,62 +84,44 @@ def keyboard_navigation(prev_clicks, next_clicks, page_data, total_pages, view_m
             page = min(total, page + 1)
 
         return {"page": page}, no_update
-    
+
     # single 模式：切换字段
     elif view_mode == "single":
-        # 需要有展开的 rule 和选中的字段
         if not expanded_rule or not selected_fields:
             return no_update, no_update
-        
+
         try:
             model = expanded_rule["model"]
             rule = expanded_rule["rule"]
             current_field_id = selected_fields[0]["field_id"]
-            
-            # 获取当前 rule 下的所有字段
+
             db = get_db_manager()
             fields = db.get_fields(model, rule)
-            
             if not fields:
                 return no_update, no_update
-            
-            # 找到当前字段的索引
+
             field_ids = [f["field_id"] for f in fields]
             try:
                 current_index = field_ids.index(current_field_id)
             except ValueError:
                 return no_update, no_update
-            
-            # 计算新的索引
+
             if trig == "keyboard-prev-trigger":
                 new_index = max(0, current_index - 1)
             elif trig == "keyboard-next-trigger":
                 new_index = min(len(fields) - 1, current_index + 1)
             else:
                 return no_update, no_update
-            
-            # 切换到新字段
+
             new_field_id = field_ids[new_index]
             new_selected = [{"model": model, "field_id": new_field_id}]
-            
             return no_update, new_selected
-            
+
         except Exception as e:
             print(f"键盘导航失败: {e}")
             return no_update, no_update
-    
+
     return no_update, no_update
-
-
-MULTI_PAGE_SIZE = 9   # 每页 9 张（3x3）
-
-
-def get_db_manager() -> DatabaseManager:
-    """获取数据库管理器实例"""
-    db_config = app.server.config.get("DB_CONFIG")
-    if not db_config:
-        raise ValueError("Database configuration not found")
-    return DatabaseManager(db_config)
 
 
 # -------------------------
@@ -165,28 +158,26 @@ def search_field(n_clicks, model, field_text):
     """搜索指定的 field"""
     if not n_clicks or not model or not field_text:
         return no_update, no_update, no_update
-    
+
     field_text = field_text.strip()
     if not field_text:
         return no_update, no_update, no_update
-    
+
     try:
         db = get_db_manager()
         schema = qident(model)
-        
-        # 查询该 field 是否存在
+
         query = f"""
         SELECT field_id, field, field_name, rule_code, type
         FROM {schema}.field
         WHERE field = %s
         """
         df = db.execute_query(query, (field_text,))
-        
+
         if df.empty:
             print(f"[搜索] 未找到 field: {field_text} in model: {model}")
             return no_update, no_update, no_update
-        
-        # 获取第一个匹配结果
+
         row = df.iloc[0]
         field_info = {
             "model": model,
@@ -196,12 +187,10 @@ def search_field(n_clicks, model, field_text):
             "rule_code": row["rule_code"],
             "type": row["type"],
         }
-        
+
         print(f"[搜索] 找到 field: {field_text}, field_id: {field_info['field_id']}, model: {model}")
-        
-        # 返回单个字段，切换到 single 模式
         return [field_info], model, "single"
-        
+
     except Exception as e:
         import traceback
         print(f"[搜索] 失败: {e}")
@@ -209,16 +198,38 @@ def search_field(n_clicks, model, field_text):
         return no_update, no_update, no_update
 
 
-def _calc_time_range(value: str) -> Optional[Tuple[str, str]]:
+def _calc_time_range(value: str, recent_days: Optional[int] = None) -> Optional[Tuple[str, str]]:
+    """计算时间范围
+    
+    Args:
+        value: 时间范围类型（all/7d/30d/90d）
+        recent_days: 当value为all时，可指定最近x天（基于系统当前时间）
+    
+    Returns:
+        时间范围元组(start, end)，或None表示不限制
+        
+    注意：为了包含当天所有数据，使用 < 次日00:00:00 而不是 <= 当天23:59:59
+    """
     if value == "all":
+        # 只有在all模式下，recent_days才生效
+        if recent_days and recent_days > 0:
+            # 使用 < 次日00:00:00 来包含今天的所有数据
+            end = datetime.now() + timedelta(days=1)
+            end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+            start = end - timedelta(days=recent_days + 1)  # +1 因为end已经是次日
+            return (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
         return None
-    end = datetime.now()
+    
+    # 使用 < 次日00:00:00 来包含今天的所有数据
+    end = datetime.now() + timedelta(days=1)
+    end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+    
     if value == "7d":
-        start = end - timedelta(days=7)
+        start = end - timedelta(days=8)  # 8天前到明天 = 包含最近7天
     elif value == "30d":
-        start = end - timedelta(days=30)
+        start = end - timedelta(days=31)
     elif value == "90d":
-        start = end - timedelta(days=90)
+        start = end - timedelta(days=91)
     else:
         return None
     return (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
@@ -232,12 +243,10 @@ def _compute_global_episode_index(df: pd.DataFrame, sort_by: str, group_by: str)
     if df.empty:
         return df
 
-    # episode 维 unique
     epi = df[["episode_id", "sn", "taskid", "area", "collected_at"]].drop_duplicates().copy()
     if not pd.api.types.is_datetime64_any_dtype(epi["collected_at"]):
         epi["collected_at"] = pd.to_datetime(epi["collected_at"], utc=True, errors="coerce")
 
-    # 排序键（统一）
     sort_keys: List[str] = []
     if sort_by == "sn":
         sort_keys.append("sn")
@@ -248,7 +257,6 @@ def _compute_global_episode_index(df: pd.DataFrame, sort_by: str, group_by: str)
     else:
         sort_keys.append("collected_at")
 
-    # 如果 group_by 非时间分组，也把分组字段纳入排序键（保证组内稳定）
     time_groups = {"day", "week", "month"}
     if group_by not in time_groups:
         if group_by == "sn" and "sn" not in sort_keys:
@@ -261,16 +269,15 @@ def _compute_global_episode_index(df: pd.DataFrame, sort_by: str, group_by: str)
     if "collected_at" not in sort_keys:
         sort_keys.append("collected_at")
 
-    epi = epi.sort_values(sort_keys, kind="mergesort")  # 稳定排序
+    epi = epi.sort_values(sort_keys, kind="mergesort")
     epi["episode_index"] = range(1, len(epi) + 1)
 
-    # 回填
     df = df.merge(epi[["episode_id", "episode_index"]], on="episode_id", how="left")
     return df
 
 
 # -------------------------
-# 视图模式：radio -> store，并清理选择和折叠状态
+# 视图模式切换
 # -------------------------
 @callback(
     Output("view-mode-store", "data"),
@@ -285,14 +292,13 @@ def _compute_global_episode_index(df: pd.DataFrame, sort_by: str, group_by: str)
     prevent_initial_call=True,
 )
 def set_view_mode(mode: str):
-    # 切模式时清空选择和折叠状态，避免 single/multi 状态互相污染
     if mode not in ("single", "multi"):
         mode = "single"
     return mode, [], None, {"page": 1}, None, None, None, None
 
 
 # -------------------------
-# 导航树渲染：响应视图模式和折叠状态变化
+# 导航树渲染
 # -------------------------
 @callback(
     Output("navigation-tree", "children"),
@@ -315,7 +321,6 @@ def render_navigation_tree(_, view_mode, expanded_model, expanded_rule):
 
             rule_items = []
             for rule_code in rule_codes:
-                # rule 项
                 rule_items.append(
                     html.Div(
                         [
@@ -326,9 +331,6 @@ def render_navigation_tree(_, view_mode, expanded_model, expanded_rule):
                                 className="ps-4",
                                 style={"fontWeight": "500"},
                             ),
-                            # 保留 field-list 容器：
-                            # - single: 会填充真实 field-item
-                            # - multi: 保持空且隐藏（无法展开到字段）
                             html.Div(
                                 [],
                                 id={"type": "field-list", "model": model, "rule": rule_code},
@@ -338,7 +340,6 @@ def render_navigation_tree(_, view_mode, expanded_model, expanded_rule):
                     )
                 )
 
-            # 根据 expanded_model 决定 rule-list 是否显示
             rule_list_style = {"display": "block"} if expanded_model == model else {"display": "none"}
 
             tree_items.append(
@@ -380,12 +381,11 @@ def toggle_model(n_clicks_list, expanded_model, model_ids):
 
     triggered_model = triggered_id["model"]
     new_expanded_model = None if expanded_model == triggered_model else triggered_model
-
     return new_expanded_model
 
 
 # -------------------------
-# single 模式：点击 rule 展开/折叠字段列表（懒加载字段）
+# single：点击 rule 展开字段（懒加载）
 # -------------------------
 @callback(
     Output({"type": "field-list", "model": ALL, "rule": ALL}, "children"),
@@ -398,13 +398,11 @@ def toggle_model(n_clicks_list, expanded_model, model_ids):
     prevent_initial_call=True,
 )
 def toggle_rule_and_render_fields(n_clicks_list, rule_ids, expanded_rule, view_mode):
-    # helper：为 ALL 输出构造 no_update 列表
     n = len(rule_ids) if rule_ids else 0
 
     def _no_updates():
         return [no_update] * n, [no_update] * n, no_update
 
-    # multi 模式：不允许展开字段
     if view_mode != "single":
         return _no_updates()
 
@@ -426,7 +424,6 @@ def toggle_rule_and_render_fields(n_clicks_list, rule_ids, expanded_rule, view_m
     new_children_list = []
     new_styles = []
 
-    # 为每个 field-list 生成 children/style
     for rid in rule_ids:
         model = rid["model"]
         rule = rid["rule"]
@@ -453,7 +450,7 @@ def toggle_rule_and_render_fields(n_clicks_list, rule_ids, expanded_rule, view_m
 
 
 # -------------------------
-# single 模式：字段选择
+# single：字段选择
 # -------------------------
 @callback(
     Output("selected-fields-store", "data", allow_duplicate=True),
@@ -495,7 +492,7 @@ def select_field(n_clicks_list, selected_fields, current_model, view_mode):
 
 
 # -------------------------
-# multi 模式：点击 rule 选择 rule + 重置页码
+# multi：点击 rule 选择 rule + 重置页码
 # -------------------------
 @callback(
     Output("selected-rule-store", "data", allow_duplicate=True),
@@ -518,13 +515,11 @@ def select_rule_multi(n_clicks_list, view_mode):
 
     model = triggered_id["model"]
     rule = triggered_id["rule"]
-
-    # 先清空 selected_fields，后续由分页回调填充第一页的 9 个字段
     return {"model": model, "rule": rule}, {"page": 1}, [], model
 
 
 # -------------------------
-# multi 模式：根据 selected_rule + page 计算本页 9 个字段，并更新分页 UI
+# multi：分页字段
 # -------------------------
 @callback(
     Output("selected-fields-store", "data", allow_duplicate=True),
@@ -548,7 +543,7 @@ def update_multi_page_fields(selected_rule, page_data, view_mode):
     page = int((page_data or {}).get("page", 1))
 
     db = get_db_manager()
-    fields = db.get_fields(model, rule)  # 已按 field 排序
+    fields = db.get_fields(model, rule)
 
     total_fields = len(fields)
     total_pages = max(1, math.ceil(total_fields / MULTI_PAGE_SIZE))
@@ -559,14 +554,13 @@ def update_multi_page_fields(selected_rule, page_data, view_mode):
     page_fields = fields[start:end]
 
     selected_fields = [{"model": model, "field_id": int(f["field_id"])} for f in page_fields]
-
     indicator = f"第 {page}/{total_pages} 页（本页 {len(page_fields)} / 总字段 {total_fields}）"
 
     return selected_fields, total_pages, {"display": "block"}, indicator
 
 
 # -------------------------
-# 已选信息显示：single 显示字段；multi 显示 model+rule+本页字段
+# 已选信息显示（保持你原逻辑）
 # -------------------------
 @callback(
     Output("selected-info-display", "children"),
@@ -588,10 +582,8 @@ def update_selected_info_display(
     total_pages,
 ):
     info_items = []
-
     db = get_db_manager()
 
-    # --- 选择信息 ---
     if view_mode == "multi":
         if selected_rule:
             info_items.append(
@@ -612,10 +604,8 @@ def update_selected_info_display(
                 )
             )
 
-    # --- Episode 信息 ---
     info_items.append(html.Hr())
 
-    # 始终显示 Episode 和字段信息
     current_field_val = ""
     episode_id_val = ""
     sn_val = ""
@@ -646,7 +636,6 @@ def update_selected_info_display(
                     collected_at_val = str(episode_info["collected_at"])
                     filename_val = str(episode_info["filename"])
 
-            # 获取当前字段
             if field_id:
                 schema = qident(current_model)
                 field_query = f"""
@@ -660,7 +649,6 @@ def update_selected_info_display(
         except Exception as e:
             info_items.append(html.Div([html.Span(f"错误: {str(e)}", className="text-danger small")]))
 
-    # 始终显示这些字段（有值则显示，无值则为空）
     info_items.extend(
         [
             html.Div([html.Strong("当前字段: "), html.Span(current_field_val, style={"wordBreak": "break-all", "fontSize": "0.85rem"})], className="mb-1"),
@@ -673,7 +661,6 @@ def update_selected_info_display(
         ]
     )
 
-    # 如果有选中的 episode，显示下载按钮
     if episode_id_val:
         info_items.append(
             html.Div(
@@ -694,7 +681,7 @@ def update_selected_info_display(
 
 
 # -------------------------
-# 图表更新：single 用旧图；multi 用子图（每页 9 个字段）
+# 图表更新：✅修复 missing 统计
 # -------------------------
 @callback(
     Output("chart-container", "children"),
@@ -705,11 +692,12 @@ def update_selected_info_display(
     Input("group-by-dropdown", "value"),
     Input("sampling-active-store", "data"),
     Input("filtered-areas-store", "data"),
+    Input("recent-days-store", "data"),
     State("view-mode-store", "data"),
     State("selected-rule-store", "data"),
     State("sampled-episodes-store", "data"),
 )
-def update_chart(selected_fields, time_range, sort_by, group_by, sampling_active, filtered_areas, view_mode, selected_rule, sampled_episodes):
+def update_chart(selected_fields, time_range, sort_by, group_by, sampling_active, filtered_areas, recent_days, view_mode, selected_rule, sampled_episodes):
     if not selected_fields:
         if view_mode == "multi":
             return html.Div("请从左侧导航树选择 Rule Code", className="text-muted text-center mt-5"), None
@@ -722,68 +710,71 @@ def update_chart(selected_fields, time_range, sort_by, group_by, sampling_active
         model = selected_fields[0]["model"]
         field_ids = [int(f["field_id"]) for f in selected_fields]
 
-        # 时间范围
-        time_range_tuple = _calc_time_range(time_range)
+        time_range_tuple = _calc_time_range(time_range, recent_days)
 
         # 拉数据
         t_db0 = time.perf_counter()
         df = db.get_field_data(model, field_ids, time_range_tuple)
         t_db1 = time.perf_counter()
 
-        # 应用抽样过滤
+        # 抽样过滤（对原始 df 做）
         if sampling_active and sampled_episodes:
             original_len = len(df)
-            df = df[df['episode_id'].isin(sampled_episodes)]
+            df = df[df["episode_id"].isin(sampled_episodes)]
             print(f"[抽样过滤] 原始数据: {original_len}, 过滤后: {len(df)}")
-        
-        # 应用地区过滤（过滤掉指定地区）
+
+        # 地区过滤（对原始 df 做）
         if filtered_areas and len(filtered_areas) > 0:
             original_len = len(df)
-            df = df[~df['area'].isin(filtered_areas)]
+            df = df[~df["area"].isin(filtered_areas)]
             print(f"[地区过滤] 过滤掉 {filtered_areas}, 原始数据: {original_len}, 过滤后: {len(df)}")
 
         if df.empty:
             return html.Div("未找到符合条件的数据", className="text-muted text-center mt-5"), None
 
-        # field 信息批量获取（包含 field、field_name 和 type）
+        # meta & thresholds
         t_meta0 = time.perf_counter()
         field_info_map = db.get_field_info_batch(model, field_ids)
-
-        # 用 field（不是 field_name）来查询阈值
         fields_for_thresholds = [field_info_map[fid]["field"] for fid in field_ids if fid in field_info_map]
         thresholds_map = db.get_thresholds_batch(model, fields_for_thresholds)
         t_meta1 = time.perf_counter()
 
-        # 根据字段类型转换 value
-        def convert_value(row):
+        # ✅ 保留 raw
+        df["value_raw"] = df["value"]
+
+        # ✅ 新：生成 value_num（画图/统计都用它，但统计的 missing 用 value_raw 判 NULL）
+        def to_value_num(row):
             fid = row["field_id"]
             if fid not in field_info_map:
                 return pd.NA
 
             field_type = field_info_map[fid].get("type", "numeric")
-            value = row["value"]
+            v = row["value_raw"]
 
             if field_type == "non_numeric":
-                # non_numeric: 空或不存在 → 1, 存在且不为空 → 0
-                if pd.isna(value) or value == "" or value == "N/A":
+                # non_numeric: 缺失(空/None/N/A/null/nan) -> 1.0, 有值 -> 0.0
+                if pd.isna(v):
                     return 1.0
-                else:
-                    return 0.0
+                s = str(v).strip()
+                if s == "" or s.lower() in ("n/a", "null", "nan"):
+                    return 1.0
+                return 0.0
             else:
-                # numeric: 正常转换为数值
                 try:
-                    return float(value)
+                    return float(v)
                 except (ValueError, TypeError):
                     return pd.NA
 
         t_conv0 = time.perf_counter()
-        df["value"] = df.apply(convert_value, axis=1)
-        df = df.dropna(subset=["value"])
+        df["value_num"] = df.apply(to_value_num, axis=1)
         t_conv1 = time.perf_counter()
 
-        if df.empty:
+        # ✅ 图表用 df_plot：只过滤 value_num，不动 df（df 要留给统计）
+        df_plot = df.dropna(subset=["value_num"]).copy()
+        if df_plot.empty:
             return html.Div("未找到可用的数值数据（value 全部无法转为数值）", className="text-muted text-center mt-5"), None
 
+        # field_info_list
         field_info_list = []
         for fid in field_ids:
             if fid not in field_info_map:
@@ -792,37 +783,38 @@ def update_chart(selected_fields, time_range, sort_by, group_by, sampling_active
             field_info_list.append(
                 {
                     "field_id": fid,
-                    "field_name": info["display_name"],  # 用于图表显示
-                    "thresholds": thresholds_map.get(info["field"]),  # 用 field 查询阈值
-                    "type": info.get("type", "numeric"),  # 字段类型
+                    "field_name": info["display_name"],
+                    "thresholds": thresholds_map.get(info["field"]),
+                    "type": info.get("type", "numeric"),
                 }
             )
 
-        # multi：先算全局 episode 顺序（统一 sort/group）
-        t_fig0 = time.perf_counter()
+        # multi：episode_index 用 df_plot（保证 x 轴只针对画出来的点）
         t_epi0 = time.perf_counter()
         if view_mode == "multi":
-            df = _compute_global_episode_index(df, sort_by=sort_by, group_by=group_by)
+            df_plot = _compute_global_episode_index(df_plot, sort_by=sort_by, group_by=group_by)
         t_epi1 = time.perf_counter()
 
+        # 图表
+        t_fig0 = time.perf_counter()
         if view_mode == "multi":
             chart = create_scatter_plot_multi_subplots(
-                df,
+                df_plot,
                 field_info_list,
                 cols=3,
                 sort_by=sort_by,
                 group_by=group_by,
             )
         else:
-            chart = create_scatter_plot(df, field_info_list, sort_by, group_by)
+            chart = create_scatter_plot(df_plot, field_info_list, sort_by, group_by)
         t_fig1 = time.perf_counter()
 
-        # 统计面板
+        # ✅ 统计：用完整 df（包含 value_raw NULL 的行）
         t_stats0 = time.perf_counter()
         stats = create_statistics_cards(df, field_info_list, group_by)
         t_stats1 = time.perf_counter()
 
-        # figure 大小 / trace 数（关键指标）
+        # figure 大小 / trace 数
         fig_bytes_mb = None
         trace_count = None
         try:
@@ -834,11 +826,10 @@ def update_chart(selected_fields, time_range, sort_by, group_by, sampling_active
 
         t1 = time.perf_counter()
 
-        # perf 日志（你也可以换成 logger.info）
         print(
             "[perf] "
             f"model={model} mode={view_mode} fields={len(field_ids)} "
-            f"rows={len(df)} "
+            f"rows_plot={len(df_plot)} rows_raw={len(df)} "
             f"db={t_db1 - t_db0:.3f}s "
             f"meta={t_meta1 - t_meta0:.3f}s "
             f"convert={t_conv1 - t_conv0:.3f}s "
@@ -862,7 +853,7 @@ def update_chart(selected_fields, time_range, sort_by, group_by, sampling_active
     prevent_initial_call=True,
 )
 def capture_click_data(click_data):
-    """捕获图表点击事件（multi 子图也适用，因为仍是同一个 field-chart）"""
+    """捕获图表点击事件（multi 子图也适用）"""
     if not click_data or "points" not in click_data or not click_data["points"]:
         return no_update
 
@@ -872,7 +863,6 @@ def capture_click_data(click_data):
         if isinstance(customdata, list) and len(customdata) >= 2:
             return {"episode_id": customdata[0], "field_id": customdata[1]}
         else:
-            # 兼容旧格式
             return {"episode_id": customdata}
 
     return no_update
@@ -891,6 +881,18 @@ def handle_area_filter(selected_areas):
 
 
 @callback(
+    Output("recent-days-store", "data"),
+    Input("recent-days-input", "value"),
+)
+def handle_recent_days(days):
+    """处理最近x天的输入：同步到Store"""
+    if days and days > 0:
+        print(f"[最近天数] 设置为: {days} 天")
+        return int(days)
+    return None
+
+
+@callback(
     Output("sampled-episodes-store", "data"),
     Output("sampling-active-store", "data"),
     Input("sampling-ratio-dropdown", "value"),
@@ -904,44 +906,39 @@ def handle_sampling(ratio, current_model, selected_fields):
     - 其他: 按 taskid 分组抽样，每个 taskid 至少保留 1 个 episode
     """
     import random
-    
-    # 100% 或无效值：不抽样
+
     if not ratio or ratio >= 100:
         return None, False
-    
-    # 没有选中字段或模型：不抽样
+
     if not current_model or not selected_fields:
         return None, False
-    
+
     try:
         db = get_db_manager()
         schema = qident(current_model)
-        
-        # 查询所有 episode_id 和 taskid
+
         query = f"""
         SELECT DISTINCT episode_id, taskid
         FROM {schema}.episode
         ORDER BY taskid, episode_id
         """
         df = db.execute_query(query)
-        
+
         if df.empty:
             return None, False
-        
-        # 按 taskid 分组抽样
+
         sampled_episodes = []
         ratio_decimal = ratio / 100.0
-        
-        for taskid in df['taskid'].unique():
-            taskid_episodes = df[df['taskid'] == taskid]['episode_id'].tolist()
-            # 确保每个 taskid 至少保留 1 个 episode
+
+        for taskid in df["taskid"].unique():
+            taskid_episodes = df[df["taskid"] == taskid]["episode_id"].tolist()
             sample_size = max(1, int(len(taskid_episodes) * ratio_decimal))
             sampled = random.sample(taskid_episodes, sample_size)
             sampled_episodes.extend(sampled)
-        
+
         print(f"[抽样] 总 episode 数: {len(df)}, 抽样后: {len(sampled_episodes)}, 比例: {ratio}%")
         return sampled_episodes, True
-        
+
     except Exception as e:
         print(f"抽样失败: {e}")
         import traceback
@@ -974,31 +971,20 @@ def download_json(n_clicks, episode_data, current_model):
             print(f"[download_json] 未找到 JSON 数据: episode_id={episode_id}, model={current_model}")
             return no_update
 
-        # 获取 JSON 内容和文件名
         json_content = json_data.get("json")
         filename = json_data.get("filename", f"{episode_id}_collect.json")
 
-        print(f"[download_json] json_content type: {type(json_content)}")
-        print(f"[download_json] filename: {filename}")
-
-        # 确保文件名以 .json 结尾
         if not filename.endswith(".json"):
             filename = f"{episode_id}_collect.json"
 
-        # 将 JSON 内容转换为字符串
         if isinstance(json_content, (dict, list)):
             json_str = json.dumps(json_content, ensure_ascii=False, indent=2)
         elif isinstance(json_content, str):
             json_str = json_content
         else:
-            print(f"[download_json] 警告：未知类型 {type(json_content)}")
             json_str = str(json_content)
 
-        print(f"[download_json] json_str type: {type(json_str)}, length: {len(json_str)}")
-
-        result = {"content": json_str, "filename": filename}
-        print(f"[download_json] 返回结果: content type={type(result['content'])}, filename={result['filename']}")
-        return result
+        return {"content": json_str, "filename": filename}
 
     except Exception as e:
         import traceback

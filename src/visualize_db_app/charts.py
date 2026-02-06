@@ -48,14 +48,23 @@ def _apply_grouping(df: pd.DataFrame, group_by: str) -> Tuple[pd.DataFrame, str]
     return df, "group_label"
 
 
+def _get_value_col(df: pd.DataFrame) -> str:
+    """优先使用 value_num（新逻辑），否则回退 value"""
+    if "value_num" in df.columns:
+        return "value_num"
+    return "value"
+
+
 def create_scatter_plot(
     df: pd.DataFrame,
     field_info_list: List[Dict[str, Any]],
     sort_by: str = "time",
     group_by: str = "sn",
 ) -> dcc.Graph:
-    """（single 模式）保持你原来的实现逻辑：一个 Figure 叠 trace"""
+    """（single 模式）一个 Figure 叠 trace"""
     fig = go.Figure()
+
+    ycol = _get_value_col(df)
 
     for field_info in field_info_list:
         field_id = field_info["field_id"]
@@ -67,6 +76,12 @@ def create_scatter_plot(
             continue
 
         field_df = _ensure_datetime_utc(field_df, "collected_at")
+
+        # 只画有效数值点
+        field_df[ycol] = pd.to_numeric(field_df[ycol], errors="coerce")
+        field_df = field_df.dropna(subset=[ycol])
+        if field_df.empty:
+            continue
 
         sort_keys = []
         if sort_by == "sn":
@@ -104,20 +119,26 @@ def create_scatter_plot(
             episode_ids = []
             for _, row in group_df.iterrows():
                 area_sn = f"{row.get('area', 'N/A')}: {row.get('sn', 'N/A')}"
+                v = row.get(ycol)
+                try:
+                    v_str = f"{float(v):.4f}"
+                except Exception:
+                    v_str = "N/A"
+
                 hover_texts.append(
                     f"Field: {field_name}<br>"
                     f"Episode: {row['episode_id']}<br>"
                     f"SN: {area_sn}<br>"
                     f"TaskID: {row.get('taskid', 'N/A')}<br>"
                     f"Time: {row['collected_at']}<br>"
-                    f"Value: {row['value']:.4f}"
+                    f"Value: {v_str}"
                 )
                 episode_ids.append([row["episode_id"], field_id])
 
             fig.add_trace(
                 go.Scatter(
                     x=group_df["episode_index"],
-                    y=group_df["value"],
+                    y=group_df[ycol],
                     mode="markers",
                     name=str(group_value),
                     text=hover_texts,
@@ -213,7 +234,9 @@ def create_scatter_plot_multi_subplots(
     df = df.copy()
     df = _ensure_datetime_utc(df, "collected_at")
 
-    # group_label 全局生成（同一 episode 属性一致，因此全局一致）
+    ycol = _get_value_col(df)
+
+    # group_label 全局生成
     df, group_key = _apply_grouping(df, group_by)
 
     # legend 顺序：按全局 episode_index 的出现顺序
@@ -235,15 +258,8 @@ def create_scatter_plot_multi_subplots(
         vertical_spacing=0.10,
     )
 
-    # 只在第一个子图显示数据点的 legend
     legend_shown = False
-    # 跟踪阈值线是否已在 legend 中显示（全局共用 4 条阈值线）
-    threshold_legends = {
-        "base_min": False,
-        "base_max": False,
-        "full_min": False,
-        "full_max": False,
-    }
+    threshold_legends = {"base_min": False, "base_max": False, "full_min": False, "full_max": False}
 
     for i, field_info in enumerate(field_info_list):
         r = i // cols + 1
@@ -257,13 +273,12 @@ def create_scatter_plot_multi_subplots(
         if field_df.empty:
             continue
 
-        # 每个字段内部只保留数值点
-        field_df["value"] = pd.to_numeric(field_df["value"], errors="coerce")
-        field_df = field_df.dropna(subset=["value"])
+        # 只画有效数值点
+        field_df[ycol] = pd.to_numeric(field_df[ycol], errors="coerce")
+        field_df = field_df.dropna(subset=[ycol])
         if field_df.empty:
             continue
 
-        # 以 episode_index 作为 x（统一全局排序）
         x_col = "episode_index" if "episode_index" in field_df.columns else "collected_at"
 
         for gv in group_values_ordered:
@@ -275,13 +290,19 @@ def create_scatter_plot_multi_subplots(
             episode_ids = []
             for _, row in group_df.iterrows():
                 area_sn = f"{row.get('area', 'N/A')}: {row.get('sn', 'N/A')}"
+                v = row.get(ycol)
+                try:
+                    v_str = f"{float(v):.4f}"
+                except Exception:
+                    v_str = "N/A"
+
                 hover_texts.append(
                     f"Field: {field_name}<br>"
                     f"Episode: {row['episode_id']}<br>"
                     f"SN: {area_sn}<br>"
                     f"TaskID: {row.get('taskid', 'N/A')}<br>"
                     f"Time: {row['collected_at']}<br>"
-                    f"Value: {row['value']:.4f}"
+                    f"Value: {v_str}"
                 )
                 episode_ids.append([row["episode_id"], field_id])
 
@@ -289,7 +310,7 @@ def create_scatter_plot_multi_subplots(
             fig.add_trace(
                 go.Scatter(
                     x=group_df[x_col],
-                    y=group_df["value"],
+                    y=group_df[ycol],
                     mode="markers",
                     name=str(gv),
                     legendgroup=str(gv),
@@ -304,7 +325,7 @@ def create_scatter_plot_multi_subplots(
             )
         legend_shown = True
 
-        # 阈值线：全局共用 legend（每种类型只在第一次出现时显示）
+        # 阈值线
         if thresholds and "episode_index" in field_df.columns:
             x_min = field_df["episode_index"].min()
             x_max = field_df["episode_index"].max()
@@ -380,7 +401,6 @@ def create_scatter_plot_multi_subplots(
                         col=c,
                     )
 
-    # 高度按行数自适应
     height = 260 * rows + 160
 
     fig.update_layout(
@@ -395,10 +415,10 @@ def create_scatter_plot_multi_subplots(
 
 
 def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, Any]], group_by: str = "sn") -> html.Div:
-    """生成统计面板，支持动态分组"""
+    """生成统计面板，支持动态分组（统计使用完整 df，包含 missing 行）"""
     cards = []
-    
-    # 根据 group_by 确定第一列标题和分组键
+
+    # 分组 key
     if group_by == "taskid":
         group_label = "TaskID"
         group_key_func = lambda row: str(row.get("taskid", "N/A"))
@@ -411,11 +431,15 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
             group_key_func = lambda row: pd.to_datetime(row.get("collected_at"), utc=True, errors="coerce").strftime("%Y-%m-%d") if pd.notna(row.get("collected_at")) else "N/A"
         elif group_by == "week":
             group_key_func = lambda row: pd.to_datetime(row.get("collected_at"), utc=True, errors="coerce").strftime("%Y-W%W") if pd.notna(row.get("collected_at")) else "N/A"
-        else:  # month
+        else:
             group_key_func = lambda row: pd.to_datetime(row.get("collected_at"), utc=True, errors="coerce").strftime("%Y-%m") if pd.notna(row.get("collected_at")) else "N/A"
-    else:  # sn (default)
+    else:
         group_label = "SN"
         group_key_func = lambda row: f"{row.get('area', 'N/A')}: {row.get('sn', 'N/A')}"
+
+    # 统计优先使用 value_raw / value_num
+    raw_col = "value_raw" if "value_raw" in df.columns else "value"
+    num_col = "value_num" if "value_num" in df.columns else "value"
 
     for field_info in field_info_list:
         field_id = field_info["field_id"]
@@ -427,53 +451,44 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
         if field_df_all.empty:
             continue
 
-        # 添加分组列
         field_df_all["group_key"] = field_df_all.apply(group_key_func, axis=1)
 
         stats_rows = []
         for group_value in field_df_all["group_key"].unique():
             group_df_all = field_df_all[field_df_all["group_key"] == group_value].copy()
             total_count = len(group_df_all)
-            
-            # metadata (non_numeric) 字段特殊处理
+
+            if total_count <= 0:
+                continue
+
             if field_type == "non_numeric":
-                # 对于 metadata：value 已在 callbacks 中转换为 0.0（通过）或 1.0（不通过）
-                # Missing: value == 1.0 表示原始值为空/N/A
-                missing_count = (group_df_all["value"] == 1.0).sum()
+                # non_numeric：missing 由 value_num==1.0 表示（你在 callbacks 里定义的）
+                group_df_all[num_col] = pd.to_numeric(group_df_all[num_col], errors="coerce")
+
+                missing_count = int((group_df_all[num_col] == 1.0).sum())
                 missing_rate = (missing_count / total_count * 100) if total_count > 0 else 0
-                
-                # 有效数据：value == 0.0（有值的记录）
-                valid_count = (group_df_all["value"] == 0.0).sum()
-                
-                # Pass: value == 0.0（有值即为通过）
+
+                valid_count = int((group_df_all[num_col] == 0.0).sum())
+
                 pass_count = valid_count
-                pass_rate = (pass_count / total_count * 100) if total_count > 0 else 0
-                
-                # Fail: 对于 metadata，没有真正的 fail（除了 missing）
                 fail_count = 0
-                
-                # Mean 对 metadata 不适用
-                mean_val = float('nan')
+                pass_rate = (pass_count / total_count * 100) if total_count > 0 else 0
+
+                mean_val = float("nan")
             else:
-                # numeric 字段的原有逻辑
-                # 计算缺失值：空字符串、"N/A"、或转换为 numeric 后的 NaN
-                group_df_all["value_numeric"] = pd.to_numeric(group_df_all["value"], errors="coerce")
-                missing_mask = (
-                    (group_df_all["value"] == "") | 
-                    (group_df_all["value"] == "N/A") | 
-                    (group_df_all["value_numeric"].isna())
-                )
-                missing_count = missing_mask.sum()
+                # numeric：missing 只统计数据库 NULL（raw_col isna）
+                missing_mask = group_df_all[raw_col].isna()
+                missing_count = int(missing_mask.sum())
                 missing_rate = (missing_count / total_count * 100) if total_count > 0 else 0
-                
-                # 过滤出有效数值
-                group_df = group_df_all[~missing_mask].copy()
-                valid_count = len(group_df)
-                
-                if valid_count > 0:
-                    mean_val = group_df["value_numeric"].mean()
-                else:
-                    mean_val = float('nan')
+
+                group_df_all[num_col] = pd.to_numeric(group_df_all[num_col], errors="coerce")
+
+                # 有效：value_num 可解析且非空
+                valid_mask = group_df_all[num_col].notna()
+                group_df = group_df_all[valid_mask].copy()
+                valid_count = int(valid_mask.sum())
+
+                mean_val = group_df[num_col].mean() if valid_count > 0 else float("nan")
 
                 pass_count = 0
                 fail_count = 0
@@ -482,8 +497,8 @@ def create_statistics_cards(df: pd.DataFrame, field_info_list: List[Dict[str, An
                     base_thresholds = thresholds["base"]
                     if base_thresholds and base_thresholds.get("min") is not None and base_thresholds.get("max") is not None:
                         passed = group_df[
-                            (group_df["value_numeric"] >= base_thresholds["min"]) & 
-                            (group_df["value_numeric"] <= base_thresholds["max"])
+                            (group_df[num_col] >= base_thresholds["min"]) &
+                            (group_df[num_col] <= base_thresholds["max"])
                         ]
                         pass_count = len(passed)
                         fail_count = valid_count - pass_count

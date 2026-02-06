@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from core.pipeline import filter_json_files_by_area
+
 
 @dataclass
 class GenerateDbCsvResult:
@@ -90,6 +92,11 @@ def run_step(
 
         # 扫描所有 JSON 文件（排除 .source_preset.json）
         json_files = [p for p in model_root.rglob(f"*{json_suffix}") if p.is_file() and p.name != ".source_preset.json"]
+        
+        # 根据 enabled_areas 过滤
+        if runtime.get("enabled_areas") is not None:
+            json_files = filter_json_files_by_area(json_files, model_root, runtime, logger)
+        
         if not json_files:
             _log(logger, log_mode, f"[generate_db_csv] model={model} 未找到 JSON 文件 -> 跳过")
             continue
@@ -210,7 +217,7 @@ def run_step(
 
             # 添加额外列（field 表额外列一般不从 JSON 提取）
             for col_name, _selector in field_extra_cols.items():
-                row[col_name] = default_value
+                row[col_name] = None if default_value == "N/A" else default_value
 
             field_rows.append(row)
 
@@ -239,9 +246,9 @@ def run_step(
                 if field_id is None:
                     continue
                 value = r[field]
-                # 转换为字符串，处理 NaN
+                # 处理 NaN：保持为 None（数据库中存为 NULL）
                 if pd.isna(value):
-                    value = ""
+                    value = None
                 else:
                     value = str(value)
 
@@ -254,7 +261,7 @@ def run_step(
 
                 # 添加额外列
                 for col_name, _selector in field_value_extra_cols.items():
-                    fv_row[col_name] = default_value
+                    fv_row[col_name] = None if default_value == "N/A" else default_value
 
                 field_value_rows.append(fv_row)
 

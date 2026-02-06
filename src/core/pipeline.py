@@ -34,10 +34,17 @@ def run_pipeline(repo_root: Path, cfg: Dict[str, Any], logger) -> None:
         "dry_run": dry_run,
     }
 
-    # ✅ 关键：如果 download 被跳过，则提前把 obs_download_root/models 注入 runtime
+    # 关键：如果 download 被跳过，则提前把 obs_download_root/models 注入 runtime
     _bootstrap_runtime_if_download_skipped(
         repo_root=repo_root,
         steps_to_run_set=steps_to_run_set,
+        runtime=runtime,
+        logger=logger,
+    )
+
+    # 构建 area 过滤机制（如果配置了 enabled_areas）
+    _setup_area_filtering(
+        global_cfg=g,
         runtime=runtime,
         logger=logger,
     )
@@ -215,3 +222,131 @@ def _merge_step_result_into_runtime(step_name: str, result: Any, runtime: Dict[s
 
     else:
         runtime[f"{step_name}_result"] = d
+
+
+def _setup_area_filtering(
+    global_cfg: Dict[str, Any],
+    runtime: Dict[str, Any],
+    logger,
+) -> None:
+    """
+    根据 global.enabled_areas 配置，构建 area 过滤机制：
+    1. 构建 taskid -> area 映射缓存
+    2. 提供过滤函数供各步骤使用
+    """
+    import json
+
+    enabled_areas = global_cfg.get("enabled_areas")
+    
+    # 未配置或为 None：不过滤
+    if enabled_areas is None:
+        runtime["enabled_areas"] = None
+        logger.info("[area_filter] enabled_areas=null -> 处理所有 area")
+        return
+    
+    # 空列表：报错
+    if isinstance(enabled_areas, list) and len(enabled_areas) == 0:
+        raise ValueError(
+            "global.enabled_areas 配置为空列表 []，这是无效配置。\n"
+            "请配置具体的 area 列表（如 [shanghai_prod, zhengzhou_prod]），\n"
+            "或设为 null 表示处理所有 area。"
+        )
+    
+    # 转换为 set
+    if isinstance(enabled_areas, list):
+        enabled_areas_set = set(enabled_areas)
+    else:
+        raise ValueError(
+            f"global.enabled_areas 必须是列表或 null，当前类型：{type(enabled_areas)}"
+        )
+    
+    runtime["enabled_areas"] = enabled_areas_set
+    logger.info("[area_filter] enabled_areas=%s", sorted(enabled_areas_set))
+    
+    # 构建 taskid -> area 映射缓存
+    obs_download_root = runtime.get("obs_download_root")
+    if not obs_download_root:
+        logger.warning("[area_filter] obs_download_root 未初始化，跳过 area 缓存构建")
+        return
+    
+    taskid_to_area: Dict[str, str] = {}
+    models = runtime.get("models", [])
+    
+    for model in models:
+        model_root = obs_download_root / model
+        if not model_root.exists():
+            continue
+        
+        for taskid_dir in model_root.iterdir():
+            if not taskid_dir.is_dir():
+                continue
+            
+            preset_file = taskid_dir / ".source_preset.json"
+            if not preset_file.exists():
+                continue
+            
+            try:
+                data = json.loads(preset_file.read_text(encoding="utf-8-sig", errors="ignore"))
+                area = data.get("preset")
+                if area:
+                    taskid_to_area[taskid_dir.name] = str(area)
+            except Exception:
+                pass
+    
+    runtime["taskid_to_area"] = taskid_to_area
+    logger.info("[area_filter] 构建 taskid->area 映射缓存：%d 条", len(taskid_to_area))
+
+
+def filter_json_files_by_area(
+    json_files: List[Path],
+    model_root: Path,
+    runtime: Dict[str, Any],
+    logger,
+) -> List[Path]:
+    """
+    根据 enabled_areas 过滤 JSON 文件列表
+    
+    Args:
+        json_files: 原始 JSON 文件列表
+        model_root: 模型根目录（obs_download/{model}）
+        runtime: 运行时上下文（包含 enabled_areas 和 taskid_to_area）
+        logger: 日志对象
+    
+    Returns:
+        过滤后的 JSON 文件列表
+    """
+    enabled_areas = runtime.get("enabled_areas")
+    
+    # 未配置 enabled_areas：不过滤
+    if enabled_areas is None:
+        return json_files
+    
+    taskid_to_area = runtime.get("taskid_to_area", {})
+    filtered: List[Path] = []
+    
+    for json_file in json_files:
+        try:
+            # 从路径中提取 taskid（第一级子目录）
+            rel_path = json_file.relative_to(model_root)
+            parts = rel_path.parts
+            if len(parts) > 0:
+                taskid = parts[0]
+                area = taskid_to_area.get(taskid)
+                
+                # 判断是否在 enabled_areas 中
+                if area and area in enabled_areas:
+                    filtered.append(json_file)
+        except Exception:
+            # 路径解析失败：保守处理，跳过该文件
+            pass
+    
+    if len(filtered) < len(json_files):
+        logger.info(
+            "[area_filter] 过滤后剩余 %d/%d 个文件（跳过 %d 个非指定 area）",
+            len(filtered),
+            len(json_files),
+            len(json_files) - len(filtered),
+        )
+    
+    return filtered
+
