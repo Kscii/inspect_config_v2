@@ -251,6 +251,8 @@ selectors:
     - "jitter_std_frames"
     - "max_interval_ms"
     - "max_interval_frames"
+    # error
+    - "errors"
 
   # -------------------------
   # 规则 1：新白名单（基于 selector 字符串本身）
@@ -301,6 +303,9 @@ selectors:
 
     - models: ["QINGLOONGV2.5"]
       contains: ["[<name>=<velocity>]"]
+
+    - models: ["QINGLOONGV2.5"]
+      contains: ["/leg>"]
 
     - models: ["S1"]
       contains: ["b'"]
@@ -584,6 +589,7 @@ find_range_full:
 
   force_non_numeric_field_rules:
     - contains: ["metadata_raw"]
+    - contains: [".<errors>"]
 
   field_range_rules:
     - contains: ["frame_align","end_diff_average_ms"]
