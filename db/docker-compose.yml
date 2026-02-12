@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: inspect_config_db
+    environment:
+      POSTGRES_DB: inspect_config_db
+      POSTGRES_USER: inspect_user
+      POSTGRES_PASSWORD: inspect_password
+      TZ: Asia/Shanghai
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - inspect_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inspect_user -d inspect_config_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  inspect_network:
+    driver: bridge

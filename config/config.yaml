@@ -1,0 +1,229 @@
+# OBS 数据收集配置
+
+## 数据库配置（支持环境变量）
+database:
+  host: ${DB_HOST:localhost}
+  port: ${DB_PORT:5433}
+  database: ${DB_NAME:inspect_config_db}
+  user: ${DB_USER:inspect_user}
+  password: ${DB_PASSWORD:inspect_password}
+
+## 采集配置
+ingest:
+  # 临时下载目录
+  tmp_dir: ${TMP_DIR:/tmp/obs_ingest}
+  
+  # obsutil 可执行文件路径（null 表示使用 PATH 中的）
+  obsutil_exe: ${OBSUTIL_EXE:null}
+  
+  # 是否删除已下载的临时文件
+  cleanup_tmp: false
+
+  # OBS 列举配置
+  obs_list_limit: 1000      # 每次列出的最大文件数
+  max_total_files: 500000    # 最大总文件数限制（防止无限列举）
+  
+  # 并发下载配置
+  concurrent_workers: 23    # 并发线程数
+  
+  # 下载模式配置
+  # full: 全量下载，覆盖所有已存在的 episode
+  # incremental: 增量下载，只下载 LastModified 晚于上次成功运行的文件（可能覆盖）
+  # new_only: 仅新增，只下载数据库中不存在的 episode（不覆盖）
+  download_mode: "incremental"
+  
+  # 批量操作配置
+  batch_insert_size: 23000    # 批量插入大小（累积 N 条后批量提交）
+  
+  # 字段提取配置
+  field_batch_size: 1000000          # 字段值批量插入大小
+  
+  # 字段过滤配置
+  field_filter:
+    enable_filter: true  # 是否启用字段过滤
+    
+    # Selector 生成配置
+    # 在列表中选择 filter key 时的优先级（按顺序检查）
+    # 如果列表元素包含这些 key，优先使用；否则使用第一个 key
+    preferred_filter_keys:
+      - "name"
+      - "loss_num"
+    
+    # 白名单1：基于角括号内容（旧规则）
+    angle_allowlist:
+      # frame_align
+      - "start_diff_average_ms"
+      - "start_diff_joint_average_ms"
+      - "start_diff_camera_average_ms"
+      - "end_diff_average_ms"
+      - "end_diff_joint_average_ms"
+      - "end_diff_camera_average_ms"
+      - "delay_earliest_ms"
+      - "advance_latest_ms"
+      # frame_count
+      - "jitter_std_ms"
+      - "jitter_std_frames"
+      - "max_interval_ms"
+      - "max_interval_frames"
+    
+    # 白名单2：基于字符序列（新规则）
+    # 双层列表：每个内层至少2个字符串，所有字符串都在selector中出现即命中
+    charseq_allowlist:
+      - ["frame_count", ".<fps>"]                         # frame_count
+      - ["arm", "拟合评分"]                                # frame_fit
+      - ["shoulder", "拟合评分"]                          # frame_fit
+      - ["elbow", "拟合评分"]
+      - ["wrist", "拟合评分"]
+      - ["camera_static_interval", ".<total_second_sum>"]  # camera_static_interval
+      - ["joint_motion_interval", ".<total_second_sum>"]   # joint_static_interval
+      - ["[<ruleCode>=<metadata_raw>]", "<rawDataMetric>"] # metadata_raw
+      - [".<loss_pp>", ".[<loss_num>=<total>]"]            # frame_align
+    
+    charseq_match_mode: "both"      # both/ordered/adjacent
+    charseq_case_sensitive: true    # 是否区分大小写
+    
+    # 黑名单：基于contains匹配，可指定构型
+    angle_blocklist:
+      # - models: ["PIKA"]
+      #   contains: ["effort"]
+      
+      # - models: ["PIKA"]
+      #   contains: ["velocity"]
+      
+      # - models: ["A2D"]
+      #   contains: ["waist"]
+      
+      # - models: ["QINGLOONGV2.5"]
+      #   contains: ["state/end>"]
+      
+      # - models: ["QINGLOONGV2.5"]
+      #   contains: ["action/end>"]
+      
+      # - models: ["QINGLOONGV2.5"]
+      #   contains: ["[<name>=<velocity>]"]
+      
+      # - models: ["QINGLOONGV2.5"]
+      #   contains: ["/leg>"]
+      
+      # - models: ["S1"]
+      #   contains: ["b'"]
+      
+      # - models: ["PIKA", "COBOTMAGICV2.0"]
+      #   contains: [".<report>.[<ruleCode>=<joint_motion_interval>].<modelInfo>.<total_second_sum>"]
+      
+      # - models: ["R1"]
+      #   contains: ["b'"]
+      
+      # - contains: [".[<name>=<force>]"]
+      
+      # - contains: ["/robot>]"]
+    
+    # 过滤顺序和模式
+    filter_order: ["angle_allow", "charseq_allow", "angle_block"]
+    angle_match_mode: "contains"        # contains/exact
+    angle_block_match_mode: "contains"  # contains/exact
+    enable_angle_allow_add: true        # 启用角括号白名单
+    enable_charseq_allow_add: true      # 启用字符序列白名单
+    enable_angle_block_exclude: true    # 启用黑名单排除
+    allow_all_if_no_allowlists: true    # 当白名单为空时是否允许所有字段
+  
+  # 重试配置
+  retry_times: 3
+  retry_delay: 2  # 秒
+  retry_backoff: 2  # 指数退避因子
+
+## 日志配置
+logging:
+  level: INFO  # DEBUG, INFO, WARNING, ERROR
+  file: logs/ingest.log
+  console: true
+
+## API Map ID 配置（每个 preset_id 的每个 model 配置一个 id）
+api_map_ids:
+  shanghai_dev:
+    181: "青龙"
+    185: "KUAVO_4PRO_LB_GRIPPER"
+    184: "KUAVO_4PRO_LB_GRIPPER_DEXHAND"
+    186: "KUAVO_4PRO_GRIPPER_DEXHAND"
+    179: "GR2"
+    183: "KUAVO_4PRO_GRIPPER"
+    190: "QINGLOONGV2.5"
+    191: "QINGLOONGV2.5-TACTILE"
+    187: "S1"
+    180: "UR"
+    176: "A2D"
+    177: "DWHEEL-TACTILE"
+    178: "FRANKA"
+    189: "R1"
+    194: "BUTLERV3"
+    182: "COBOTMAGICV2.0"
+    195: "DWHEEL"
+    188: "PIKA"
+    175: "A2"
+  shanghai_prod:
+    204: "A2"
+    203: "A2D"
+    202: "DWHEEL-TACTILE"
+    201: "FRANKA"
+    200: "GR2"
+    199: "UR"
+    198: "青龙"
+    197: "COBOTMAGICV2.0"
+    196: "KUAVO_4PRO_GRIPPER"
+    195: "KUAVO_4PRO_LB_GRIPPER_DEXHAND"
+    194: "KUAVO_4PRO_LB_GRIPPER"
+    193: "KUAVO_4PRO_GRIPPER_DEXHAND"
+    192: "S1"
+    191: "PIKA"
+    190: "R1"
+    189: "QINGLOONGV2.5"
+    188: "QINGLOONGV2.5-TACTILE"
+    187: "BUTLERV3"
+  zhengzhou_prod:
+    148: "BUTLERV3"
+    149: "QINGLOONGV2.5-TACTILE"
+    150: "QINGLOONGV2.5"
+    151: "R1"
+    152: "PIKA"
+    153: "S1"
+    154: "KUAVO_4PRO_GRIPPER_DEXHAND"
+    155: "KUAVO_4PRO_LB_GRIPPER"
+    156: "KUAVO_4PRO_LB_GRIPPER_DEXHAND"
+    157: "KUAVO_4PRO_GRIPPER"
+    158: "COBOTMAGICV2.0"
+    159: "青龙"
+    160: "UR"
+    161: "GR2"
+    162: "FRANKA"
+    163: "DWHEEL-TACTILE"
+    164: "A2D"
+    165: "A2"
+
+## Presets 配置（从 init_presets.sql 迁移）
+presets:
+  - presets_id: shanghai_dev
+    area: shanghai
+    environment: dev
+    report_obs_bucket: openloong-apps-dev-private
+    report_obs_path: data-collector-svc/collect
+    rule_obs_bucket: openloong-apps-dev-private
+    rule_obs_path: data-collector-svc/range
+    obsutil_config_path: ${OBSUTIL_CONFIG_SHANGHAI:/home/app-dev/.obsutil_shanghai/.obsutilconfig_shanghai}
+
+  - presets_id: shanghai_prod
+    area: shanghai
+    environment: prod
+    report_obs_bucket: openloong-apps-prod-private
+    report_obs_path: data-collector-svc/collect
+    rule_obs_bucket: openloong-apps-prod-private
+    rule_obs_path: data-collector-svc/range
+    obsutil_config_path: ${OBSUTIL_CONFIG_SHANGHAI:/home/app-dev/.obsutil_shanghai/.obsutilconfig_shanghai}
+  
+  - presets_id: zhengzhou_prod
+    area: zhengzhou
+    environment: prod
+    report_obs_bucket: openloong-zhengzhou-apps-private
+    report_obs_path: data-collector-svc/collect
+    rule_obs_bucket: openloong-zhengzhou-apps-private
+    rule_obs_path: data-collector-svc/range
+    obsutil_config_path: ${OBSUTIL_CONFIG_ZHENGZHOU:/home/app-dev/.obsutil_zhengzhou/.obsutilconfig_zhengzhou}
