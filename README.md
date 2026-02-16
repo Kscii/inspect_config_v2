@@ -12,4 +12,3 @@ python -m src.main --sync-presets
 python -m src.main
 
 
-hahah
