@@ -10,3 +10,6 @@ python -m src.main --sync-presets
 
 运行数据收集
 python -m src.main
+
+
+hahah
