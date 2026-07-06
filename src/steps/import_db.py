@@ -61,10 +61,14 @@ def run_step(
     schema_name_template: str = str(step_cfg.get("schema_name_template", "{model_lower}"))
     create_tables_if_missing: bool = bool(step_cfg.get("create_tables_if_missing", True))
     enable_full: bool = bool(step_cfg.get("enable_full", True))
+    collect_json_batch_size: int = int(step_cfg.get("collect_json_batch_size", 50))
+    collect_json_log_every: int = int(step_cfg.get("collect_json_log_every", 5000))
     dry_run: bool = bool(step_cfg.get("dry_run", False)) or bool(global_cfg.get("dry_run", False))
 
     db_dirname: str = str(step_cfg.get("db_dirname", "db"))
     db_root = repo_root / db_dirname
+
+    models = _filter_models_for_import(models=models, step_cfg=step_cfg)
 
     imported_models: List[str] = []
 
@@ -107,6 +111,8 @@ def run_step(
                     truncate_before_import=truncate_before_import,
                     create_tables_if_missing=create_tables_if_missing,
                     enable_full=enable_full,
+                    collect_json_batch_size=collect_json_batch_size,
+                    collect_json_log_every=collect_json_log_every,
                     dry_run=dry_run,
                     logger=logger,
                     log_mode=log_mode,
@@ -114,7 +120,11 @@ def run_step(
                 imported_models.append(model)
                 _log(logger, log_mode, f"[import_db] model={model} 导入完成")
             except Exception as e:
-                conn.rollback()
+                try:
+                    if not conn.closed:
+                        conn.rollback()
+                except Exception as rollback_error:
+                    _log(logger, log_mode, f"[import_db] rollback 失败（保留原始错误继续抛出）: {rollback_error}")
                 raise RuntimeError(f"[import_db] model={model} 导入失败：{e}") from e
 
     finally:
@@ -122,6 +132,41 @@ def run_step(
 
     _log(logger, log_mode, f"[import_db] 全部完成，共导入 {len(imported_models)} 个 model")
     return ImportDbResult(imported_models=imported_models)
+
+
+def _filter_models_for_import(models: List[str], step_cfg: Dict[str, Any]) -> List[str]:
+    """
+    支持从失败的 model 继续导入，避免重跑已完成的 model。
+
+    可选配置：
+    - models: 只导入这些 model（按 runtime 中原顺序）
+    - skip_models: 跳过这些 model
+    - start_from_model: 从该 model 开始导入（包含该 model）
+    """
+    selected = list(models)
+
+    only_models = step_cfg.get("models") or []
+    if only_models:
+        only_set = {str(m) for m in only_models}
+        selected = [m for m in selected if m in only_set]
+
+    skip_models = step_cfg.get("skip_models") or []
+    if skip_models:
+        skip_set = {str(m) for m in skip_models}
+        selected = [m for m in selected if m not in skip_set]
+
+    start_from_model = step_cfg.get("start_from_model")
+    if start_from_model:
+        start_from = str(start_from_model)
+        try:
+            start_index = selected.index(start_from)
+        except ValueError as e:
+            raise ValueError(
+                f"[import_db] start_from_model={start_from!r} 不在待导入 model 列表中：{selected}"
+            ) from e
+        selected = selected[start_index:]
+
+    return selected
 
 
 def _import_model(
@@ -132,6 +177,8 @@ def _import_model(
     truncate_before_import: bool,
     create_tables_if_missing: bool,
     enable_full: bool,
+    collect_json_batch_size: int,
+    collect_json_log_every: int,
     dry_run: bool,
     logger,
     log_mode: str,
@@ -232,6 +279,8 @@ def _import_model(
                 model=model,
                 episode_csv=episode_csv,
                 truncate=truncate_before_import,
+                batch_size=collect_json_batch_size,
+                log_every=collect_json_log_every,
                 dry_run=dry_run,
                 logger=logger,
                 log_mode=log_mode,
@@ -478,6 +527,8 @@ def _import_collect_json(
     model: str,
     episode_csv: Path,
     truncate: bool,
+    batch_size: int,
+    log_every: int,
     dry_run: bool,
     logger,
     log_mode: str,
@@ -522,7 +573,8 @@ def _import_collect_json(
     skipped = 0
 
     batch: List[Tuple[str, str, str]] = []
-    batch_size = 500  # 可调：500~2000
+    batch_size = max(1, batch_size)
+    log_every = max(0, log_every)
 
     # ✅ 用 Identifier 生成带引号的 schema/table
     # 生成：INSERT INTO "cobotmagicv2.0".collect_json ...
@@ -549,6 +601,8 @@ def _import_collect_json(
         execute_values(cur, insert_sql, batch, page_size=len(batch))
         inserted += len(batch)
         batch = []
+        if log_every and inserted % log_every == 0:
+            _log(logger, log_mode, f"[import_db] collect_json 已导入 {inserted} 条")
 
     try:
         reader = csv.DictReader(f)

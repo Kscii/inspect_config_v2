@@ -47,6 +47,7 @@ def run_pipeline(repo_root: Path, cfg: Dict[str, Any], logger) -> None:
         global_cfg=g,
         runtime=runtime,
         logger=logger,
+        download_will_run=(steps_to_run_set is None or "download" in steps_to_run_set),
     )
 
     logger.info("============================================================")
@@ -179,6 +180,9 @@ def _merge_step_result_into_runtime(step_name: str, result: Any, runtime: Dict[s
         runtime["collect_root"] = Path(d["collect_root"])
         runtime["obs_download_root"] = Path(d["obs_download_root"])
         logger.info("[download] models=%s", runtime["models"])
+        # download 完成后，若 enabled_areas 已设置但 taskid_to_area 尚未构建，立即重建
+        if runtime.get("enabled_areas") is not None:
+            _rebuild_taskid_to_area(runtime, logger)
 
     elif step_name == "selectors":
         runtime["model_to_selectors_txt"] = {k: Path(v) for k, v in d.get("model_to_selectors_txt", {}).items()}
@@ -228,6 +232,7 @@ def _setup_area_filtering(
     global_cfg: Dict[str, Any],
     runtime: Dict[str, Any],
     logger,
+    download_will_run: bool,
 ) -> None:
     """
     根据 global.enabled_areas 配置，构建 area 过滤机制：
@@ -263,28 +268,47 @@ def _setup_area_filtering(
     runtime["enabled_areas"] = enabled_areas_set
     logger.info("[area_filter] enabled_areas=%s", sorted(enabled_areas_set))
     
-    # 构建 taskid -> area 映射缓存
+    # 构建 taskid -> area 映射缓存（若 obs_download_root 已初始化）
     obs_download_root = runtime.get("obs_download_root")
     if not obs_download_root:
-        logger.warning("[area_filter] obs_download_root 未初始化，跳过 area 缓存构建")
+        if download_will_run:
+            logger.info("[area_filter] obs_download_root 尚未初始化，将在 download 完成后构建 area 缓存")
+        else:
+            logger.warning("[area_filter] obs_download_root 未初始化，跳过 area 缓存构建")
         return
     
+    _rebuild_taskid_to_area(runtime, logger)
+
+
+def _rebuild_taskid_to_area(
+    runtime: Dict[str, Any],
+    logger,
+) -> None:
+    """
+    根据 runtime 中已有的 obs_download_root 和 models，重建 taskid->area 映射缓存。
+    """
+    import json
+
+    obs_download_root = runtime.get("obs_download_root")
+    if not obs_download_root:
+        return
+
     taskid_to_area: Dict[str, str] = {}
     models = runtime.get("models", [])
-    
+
     for model in models:
         model_root = obs_download_root / model
         if not model_root.exists():
             continue
-        
+
         for taskid_dir in model_root.iterdir():
             if not taskid_dir.is_dir():
                 continue
-            
+
             preset_file = taskid_dir / ".source_preset.json"
             if not preset_file.exists():
                 continue
-            
+
             try:
                 data = json.loads(preset_file.read_text(encoding="utf-8-sig", errors="ignore"))
                 area = data.get("preset")
@@ -292,7 +316,7 @@ def _setup_area_filtering(
                     taskid_to_area[taskid_dir.name] = str(area)
             except Exception:
                 pass
-    
+
     runtime["taskid_to_area"] = taskid_to_area
     logger.info("[area_filter] 构建 taskid->area 映射缓存：%d 条", len(taskid_to_area))
 
@@ -349,4 +373,3 @@ def filter_json_files_by_area(
         )
     
     return filtered
-
